@@ -1,0 +1,6 @@
+bin/
+*.sock
+*.tmp
+.pi-lens/
+.ruff_cache/
+PLAN*.md
