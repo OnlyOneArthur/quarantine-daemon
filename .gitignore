@@ -4,3 +4,4 @@ bin/
 .pi-lens/
 .ruff_cache/
 PLAN*.md
+HANDOFF*.md
