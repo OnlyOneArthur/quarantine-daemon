@@ -39,7 +39,7 @@ var pastebinSites = map[string]struct{}{
 }
 
 var discordCDNs = map[string]struct{}{
-	"cdn.discordapp.com":  {},
+	"cdn.discordapp.com":   {},
 	"media.discordapp.net": {},
 }
 

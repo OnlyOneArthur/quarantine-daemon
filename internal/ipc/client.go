@@ -1,0 +1,214 @@
+package ipc
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"sync"
+	"time"
+
+	"github.com/OnlyOneArthur/quarantine-daemon/internal/quarantine"
+)
+
+// DefaultDialTimeout bounds how long NewClient waits for the daemon to accept.
+const DefaultDialTimeout = 2 * time.Second
+
+// Client is a concurrency-safe JSON-RPC client for the daemon control socket.
+type Client struct {
+	socketPath string
+	timeout    time.Duration
+
+	mu   sync.Mutex
+	conn net.Conn
+	rd   *bufio.Reader
+	seq  uint64
+}
+
+// NewClient connects to the daemon listening on socketPath.
+func NewClient(socketPath string) (*Client, error) {
+	c := &Client{
+		socketPath: socketPath,
+		timeout:    DefaultDialTimeout,
+	}
+	if err := c.dial(); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (c *Client) dial() error {
+	conn, err := net.DialTimeout("unix", c.socketPath, c.timeout)
+	if err != nil {
+		return fmt.Errorf("dial unix socket %s: %w", c.socketPath, err)
+	}
+	c.conn = conn
+	c.rd = bufio.NewReader(conn)
+	return nil
+}
+
+// Close terminates the underlying connection.
+func (c *Client) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn == nil {
+		return nil
+	}
+	err := c.conn.Close()
+	c.conn = nil
+	c.rd = nil
+	return err
+}
+
+// call sends a request and decodes the response. If the connection is broken
+// during the exchange it redials; idempotent methods are then resent once, while
+// mutating methods return the transport error so a lost response cannot cause a
+// second mutation.
+func (c *Client) call(ctx context.Context, method string, params any, out any) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	req := Request{Method: method}
+	if params != nil {
+		raw, err := json.Marshal(params)
+		if err != nil {
+			return fmt.Errorf("marshal params: %w", err)
+		}
+		req.Params = raw
+	}
+	c.seq++
+	req.ID = fmt.Sprintf("%d", c.seq)
+
+	payload, err := json.Marshal(req)
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+	payload = append(payload, '\n')
+
+	line, err := c.exchange(ctx, payload)
+	if err != nil {
+		if dialErr := c.dial(); dialErr != nil {
+			return dialErr
+		}
+		if !isIdempotent(method) {
+			return err
+		}
+		line, err = c.exchange(ctx, payload)
+		if err != nil {
+			return err
+		}
+	}
+
+	var resp Response
+	if err := json.Unmarshal(line, &resp); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	if resp.Error != nil {
+		return resp.Error
+	}
+	if out != nil {
+		if err := json.Unmarshal(resp.Result, out); err != nil {
+			return fmt.Errorf("decode result: %w", err)
+		}
+	}
+	return nil
+}
+
+// isIdempotent reports whether method is read-only and safe to resend after a
+// transport failure.
+func isIdempotent(method string) bool {
+	switch method {
+	case MethodPing, MethodGetStatus, MethodListVault, MethodInspectItem:
+		return true
+	default:
+		return false
+	}
+}
+
+// exchange writes payload and reads one response line. Caller must hold c.mu.
+// On transport failure the connection is dropped so the caller can redial.
+func (c *Client) exchange(ctx context.Context, payload []byte) ([]byte, error) {
+	if c.conn == nil {
+		return nil, errors.New("not connected")
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = c.conn.SetDeadline(deadline)
+	} else {
+		_ = c.conn.SetDeadline(time.Time{})
+	}
+	if _, err := c.conn.Write(payload); err != nil {
+		c.drop()
+		return nil, fmt.Errorf("write request: %w", err)
+	}
+	line, err := c.rd.ReadBytes('\n')
+	if err != nil {
+		c.drop()
+		return nil, fmt.Errorf("read response: %w", err)
+	}
+	return line, nil
+}
+
+// drop closes the current connection. Caller must hold c.mu.
+func (c *Client) drop() {
+	if c.conn != nil {
+		_ = c.conn.Close()
+	}
+	c.conn = nil
+	c.rd = nil
+}
+
+// Ping verifies connectivity and that the server is responsive.
+func (c *Client) Ping(ctx context.Context) error {
+	return c.call(ctx, MethodPing, nil, nil)
+}
+
+// GetStatus fetches the daemon status snapshot.
+func (c *Client) GetStatus(ctx context.Context) (*StatusResponse, error) {
+	var out StatusResponse
+	if err := c.call(ctx, MethodGetStatus, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ListVault returns metadata for every quarantined item.
+func (c *Client) ListVault(ctx context.Context) ([]*quarantine.ItemMetadata, error) {
+	var out []*quarantine.ItemMetadata
+	if err := c.call(ctx, MethodListVault, nil, &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []*quarantine.ItemMetadata{}
+	}
+	return out, nil
+}
+
+// InspectItem returns metadata for a single quarantined item by id.
+func (c *Client) InspectItem(ctx context.Context, id string) (*quarantine.ItemMetadata, error) {
+	var out quarantine.ItemMetadata
+	if err := c.call(ctx, MethodInspectItem, ItemParams{ID: id}, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// RestoreItem restores a quarantined item to its original path, or to destPath when non-empty.
+func (c *Client) RestoreItem(ctx context.Context, id, destPath string) error {
+	return c.call(ctx, MethodRestoreItem, ItemParams{ID: id, DestPath: destPath}, nil)
+}
+
+// PurgeItem permanently deletes a quarantined item and its sidecar.
+func (c *Client) PurgeItem(ctx context.Context, id string) error {
+	return c.call(ctx, MethodPurgeItem, ItemParams{ID: id}, nil)
+}
+
+// IsNotFound reports whether err is an ITEM_NOT_FOUND protocol error.
+func IsNotFound(err error) bool {
+	var rpcErr *RPCError
+	if errors.As(err, &rpcErr) {
+		return rpcErr.Code == "ITEM_NOT_FOUND"
+	}
+	return false
+}

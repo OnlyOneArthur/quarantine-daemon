@@ -491,4 +491,3 @@ build() {
 		t.Errorf("expected syntax error for incomplete bash script")
 	}
 }
-

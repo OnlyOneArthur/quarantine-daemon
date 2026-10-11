@@ -364,7 +364,8 @@ func TestPETriage(t *testing.T) {
 	copy(data, []byte("MZ"))
 	// Point e_lfanew at 0x3C to 0x80
 	data[0x3C] = 0x80
-data[0x80] = 'P'; data[0x81] = 'E'
+	data[0x80] = 'P'
+	data[0x81] = 'E'
 	copy(data[0x90:], []byte("UPX!"))
 
 	cfg := config.DefaultConfig()
