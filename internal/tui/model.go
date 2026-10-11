@@ -11,6 +11,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/help"
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/ipc"
@@ -32,6 +33,7 @@ const (
 	paneDashboard pane = iota
 	paneVault
 	paneInspector
+	paneWatch
 	paneCount
 )
 
@@ -43,9 +45,56 @@ func (p pane) String() string {
 		return "Vault"
 	case paneInspector:
 		return "Inspector"
+	case paneWatch:
+		return "Watch Targets"
 	default:
 		return "?"
 	}
+}
+
+// WatchPreset describes a selectable directory or file to add to watcher.
+type WatchPreset struct {
+	Label       string
+	Path        string
+	Description string
+}
+
+var defaultWatchPresets = []WatchPreset{
+	{
+		Label:       "~/Downloads",
+		Path:        "~/Downloads",
+		Description: "Default user downloads folder (browser payloads, PKGBUILDs)",
+	},
+	{
+		Label:       "/tmp",
+		Path:        "/tmp",
+		Description: "System temporary folder (common script drop location)",
+	},
+	{
+		Label:       "~/.cache/yay",
+		Path:        "~/.cache/yay",
+		Description: "AUR helper (yay) build cache directory",
+	},
+	{
+		Label:       "~/.cache/paru/clone",
+		Path:        "~/.cache/paru/clone",
+		Description: "AUR helper (paru) git package repositories",
+	},
+	{
+		Label:       "~/Desktop",
+		Path:        "~/Desktop",
+		Description: "Desktop workspace folder (dropped scripts & files)",
+	},
+	{
+		Label:       "/var/tmp",
+		Path:        "/var/tmp",
+		Description: "Persistent temporary directory",
+	},
+	{
+		Label:       "[+ Custom path or file...]",
+		Path:        "",
+		Description: "Specify any custom directory or individual file to monitor",
+	},
 }
 
 type confirmKind int
@@ -74,6 +123,10 @@ type Model struct {
 	items     []*quarantine.ItemMetadata
 	inspected *quarantine.ItemMetadata
 
+	watchCursor  int
+	enteringPath bool
+	inputBuffer  string
+
 	status *ipc.StatusResponse
 
 	pending   confirmKind
@@ -83,6 +136,15 @@ type Model struct {
 	backoff       time.Duration
 	reconnectWait time.Duration
 
+	// vaultLoaded is false until the first vaultMsg reply arrives, which is
+	// when the vault pane shows its spinner instead of the empty-state frame.
+	vaultLoaded bool
+
+	// blinkStep indexes blinkSequence; blinkActive indicates if the blink loop is running.
+	blinkStep   int
+	blinkActive bool
+
+	spin spinner.Model
 	help help.Model
 }
 
@@ -93,7 +155,8 @@ func NewModel(dial Dialer, version string) *Model {
 	return &Model{
 		dial:    dial,
 		version: version,
-		help:    help.New(),
+		spin:    newSpinner(),
+		help:    newHelp(),
 	}
 }
 
@@ -130,6 +193,14 @@ type actionMsg struct {
 	err  error
 }
 
+type addWatchMsg struct {
+	path string
+	err  error
+}
+
+// blinkMsg advances the eye blink animation.
+type blinkMsg time.Time
+
 // Init starts the refresh loop.
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(m.refreshCmd(), tickCmd())
@@ -139,6 +210,88 @@ func (m *Model) Init() tea.Cmd {
 // block the command they drain.
 var tickCmd = func() tea.Cmd {
 	return tea.Tick(RefreshInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
+
+// spinnerTickCmd is a var so tests can stub the spinner timer out, like tickCmd.
+var spinnerTickCmd = func(m spinner.Model) tea.Cmd { return m.Tick }
+
+// blinkSequence maps a blink step to an index into eyeFrames (view.go):
+// open → half → slit → shut, then back out the same way, so the eye eases
+// shut and eases open again instead of snapping.
+var blinkSequence = []int{0, 1, 2, 3, 2, 1}
+
+// blinkDelays is how long each step of blinkSequence is held. The long first
+// entry is the rest between blinks; the rest are the shutter itself.
+var blinkDelays = []time.Duration{
+	2500 * time.Millisecond,
+	90 * time.Millisecond,
+	70 * time.Millisecond,
+	140 * time.Millisecond,
+	70 * time.Millisecond,
+	90 * time.Millisecond,
+}
+
+// blinkTickCmd is a var so tests can stub the blink timer out, like tickCmd.
+var blinkTickCmd = func(d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(t time.Time) tea.Msg { return blinkMsg(t) })
+}
+
+// spinnerVisible reports whether the active pane shows the spinner: the
+// dashboard before the first status reply and the vault before the first vault
+// list. Never spins while disconnected.
+func (m *Model) spinnerVisible() bool {
+	if !m.connected {
+		return false
+	}
+	switch m.pane {
+	case paneDashboard:
+		return m.status == nil
+	case paneVault:
+		return !m.vaultLoaded
+	case paneWatch:
+		return m.status == nil
+	default:
+		return false
+	}
+}
+
+// eyeVisible reports whether the dashboard eye emblem is on screen, which is
+// also what gates the blink animation: the emblem renders only on the
+// dashboard pane and only once the terminal is wide enough for it.
+func (m *Model) eyeVisible() bool {
+	return m.pane == paneDashboard && m.width >= eyeMinWidth
+}
+
+// ensureBlink ensures the eye blink tick loop is active when the eye is
+// visible, or stopped when it is off screen.
+func (m *Model) ensureBlink(cmd tea.Cmd) tea.Cmd {
+	if !m.eyeVisible() {
+		m.blinkActive = false
+		m.blinkStep = 0
+		return cmd
+	}
+	if m.blinkActive {
+		return cmd
+	}
+	m.blinkActive = true
+	tick := blinkTickCmd(blinkDelays[m.blinkStep])
+	if cmd == nil {
+		return tick
+	}
+	return tea.Batch(cmd, tick)
+}
+
+// withSpinner appends the spinner tick while the spinner is visible, so the
+// animation keeps advancing.
+func (m *Model) withSpinner(cmd tea.Cmd) tea.Cmd {
+	if !m.spinnerVisible() {
+		return cmd
+	}
+	tick := spinnerTickCmd(m.spin)
+	if cmd == nil {
+		return tick
+	}
+	return tea.Batch(cmd, tick)
 }
 
 // refreshCmd returns a command that reconnects if needed and reloads state.
@@ -206,9 +359,31 @@ func actionCmd(c Client, kind confirmKind, id string) tea.Cmd {
 	}
 }
 
+func addWatchCmd(c Client, path string) tea.Cmd {
+	return func() tea.Msg {
+		if c == nil {
+			return addWatchMsg{path: path, err: errors.New("not connected")}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		err := c.AddWatchPath(ctx, path)
+		return addWatchMsg{path: path, err: err}
+	}
+}
+
 // Update advances the model. It is intentionally free of tea.Program so tests
 // can drive state transitions directly.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	model, cmd := m.update(msg)
+	if mm, ok := model.(*Model); ok {
+		cmd = mm.withSpinner(cmd)
+		cmd = mm.ensureBlink(cmd)
+		return mm, cmd
+	}
+	return model, cmd
+}
+
+func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -240,6 +415,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reconnectWait = 0
 		return m, fetchCmd(msg.client)
 
+	case blinkMsg:
+		if !m.eyeVisible() {
+			m.blinkActive = false
+			m.blinkStep = 0
+			return m, nil
+		}
+		m.blinkStep = (m.blinkStep + 1) % len(blinkSequence)
+		return m, blinkTickCmd(blinkDelays[m.blinkStep])
+
+	case spinner.TickMsg:
+		if !m.spinnerVisible() {
+			return m, nil
+		}
+		var tick tea.Cmd
+		m.spin, tick = m.spin.Update(msg)
+		return m, tick
+
 	case statusMsg:
 		if m.handleConnErr(msg.client, msg.err) {
 			return m, nil
@@ -252,6 +444,7 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.items = msg.items
+		m.vaultLoaded = true
 		m.clampCursor()
 		return m, nil
 
@@ -272,6 +465,20 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.setNotice(fmt.Sprintf("%s ok: %s", actionLabel(msg.kind), shortID(msg.id)), false)
+		if m.client != nil {
+			return m, fetchCmd(m.client)
+		}
+		return m, nil
+
+	case addWatchMsg:
+		if msg.err != nil {
+			if m.handleConnErr(m.client, msg.err) {
+				return m, nil
+			}
+			m.setNotice(fmt.Sprintf("add watch failed: %v", msg.err), true)
+			return m, nil
+		}
+		m.setNotice(fmt.Sprintf("now watching: %s", msg.path), false)
 		if m.client != nil {
 			return m, fetchCmd(m.client)
 		}
@@ -342,6 +549,9 @@ func (m *Model) setNotice(s string, isErr bool) {
 }
 
 func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.enteringPath {
+		return m.handleInputKey(msg)
+	}
 	if m.pending != confirmNone {
 		return m.handleConfirmKey(msg)
 	}
@@ -356,14 +566,60 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, keys.ViewInspector):
 		return m, m.openInspector()
+	case key.Matches(msg, keys.ViewWatch):
+		m.pane = paneWatch
+		return m, nil
+	case key.Matches(msg, keys.AddCustom):
+		m.enteringPath = true
+		m.inputBuffer = "~/Downloads/PKGBUILD"
+		return m, nil
+	case key.Matches(msg, keys.Help):
+		m.help.ShowAll = !m.help.ShowAll
+		return m, nil
 	case key.Matches(msg, keys.Next):
 		m.pane = (m.pane + 1) % paneCount
+		return m, nil
+	case m.pane == paneWatch:
+		switch {
+		case key.Matches(msg, keys.Up):
+			m.moveWatchCursor(-1)
+			return m, nil
+		case key.Matches(msg, keys.Down):
+			m.moveWatchCursor(1)
+			return m, nil
+		case key.Matches(msg, keys.Open) || msg.Type == tea.KeySpace || msg.String() == " ":
+			if m.watchCursor >= 0 && m.watchCursor < len(defaultWatchPresets) {
+				preset := defaultWatchPresets[m.watchCursor]
+				if preset.Path == "" {
+					m.enteringPath = true
+					m.inputBuffer = "~/Downloads/PKGBUILD"
+					return m, nil
+				}
+				return m, addWatchCmd(m.client, preset.Path)
+			}
+			return m, nil
+		case key.Matches(msg, keys.Back):
+			m.pane = paneVault
+			return m, nil
+		}
 		return m, nil
 	case key.Matches(msg, keys.Up):
 		m.moveCursor(-1)
 		return m, nil
 	case key.Matches(msg, keys.Down):
 		m.moveCursor(1)
+		return m, nil
+	case key.Matches(msg, keys.Top):
+		m.moveCursor(-len(m.items))
+		return m, nil
+	case key.Matches(msg, keys.Bottom):
+		m.moveCursor(len(m.items))
+		return m, nil
+	case key.Matches(msg, keys.PageUp):
+		m.moveCursor(-m.listHeight())
+		return m, nil
+	case key.Matches(msg, keys.PageDown):
+		m.moveCursor(m.listHeight())
 		return m, nil
 	case key.Matches(msg, keys.Open):
 		return m, m.openInspector()
@@ -400,6 +656,48 @@ func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	return m, nil
+}
+
+func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	case tea.KeyEnter:
+		path := m.inputBuffer
+		m.enteringPath = false
+		m.inputBuffer = ""
+		return m, addWatchCmd(m.client, path)
+	case tea.KeyEsc:
+		m.enteringPath = false
+		m.inputBuffer = ""
+		return m, nil
+	case tea.KeyBackspace:
+		if len(m.inputBuffer) > 0 {
+			r := []rune(m.inputBuffer)
+			m.inputBuffer = string(r[:len(r)-1])
+		}
+		return m, nil
+	case tea.KeySpace:
+		m.inputBuffer += " "
+		return m, nil
+	case tea.KeyRunes:
+		m.inputBuffer += string(msg.Runes)
+		return m, nil
+	}
+	return m, nil
+}
+
+func (m *Model) moveWatchCursor(delta int) {
+	if len(defaultWatchPresets) == 0 {
+		return
+	}
+	m.watchCursor += delta
+	if m.watchCursor < 0 {
+		m.watchCursor = 0
+	}
+	if m.watchCursor >= len(defaultWatchPresets) {
+		m.watchCursor = len(defaultWatchPresets) - 1
+	}
 }
 
 // openInspector inspects the selected item (or the item already inspected when
@@ -465,7 +763,12 @@ func (m *Model) ensureVisible() {
 }
 
 func (m *Model) listHeight() int {
-	h := m.height - 8
+	// chromeTop (header + tabs + blank) plus the vault title block and the
+	// footer (notice + rule + help).
+	h := m.height - chromeTop - 5
+	if m.notice != "" {
+		h--
+	}
 	if h < 1 {
 		h = 1
 	}

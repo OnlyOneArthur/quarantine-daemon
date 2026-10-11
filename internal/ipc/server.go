@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,6 +29,11 @@ type StatusProvider interface {
 	Status() StatusResponse
 }
 
+// WatchManager exposes dynamic watch path registration.
+type WatchManager interface {
+	AddWatchPath(path string) error
+}
+
 // StaticStatusProvider provides static status information for testing or simple setups.
 type StaticStatusProvider struct {
 	StatusData StatusResponse
@@ -39,9 +45,10 @@ func (s StaticStatusProvider) Status() StatusResponse {
 
 // Server is a Unix domain socket server handling IPC requests.
 type Server struct {
-	socketPath string
-	vault      *quarantine.Vault
-	provider   StatusProvider
+	socketPath   string
+	vault        *quarantine.Vault
+	provider     StatusProvider
+	watchManager WatchManager
 
 	ln       net.Listener
 	wg       sync.WaitGroup
@@ -59,6 +66,13 @@ func NewServer(socketPath string, vault *quarantine.Vault, statusProvider Status
 		provider:   statusProvider,
 		conns:      make(map[net.Conn]struct{}),
 	}
+}
+
+// SetWatchManager attaches a WatchManager to the server.
+func (s *Server) SetWatchManager(wm WatchManager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.watchManager = wm
 }
 
 // Start recovers any stale socket, creates the Unix domain socket listener,
@@ -352,6 +366,25 @@ func (s *Server) dispatch(req *Request) *Response {
 			} else {
 				resp.Error = &RPCError{Code: "PURGE_ERROR", Message: err.Error()}
 			}
+			return resp
+		}
+		resp.Result = json.RawMessage(`{"status":"ok"}`)
+
+	case MethodAddWatchPath:
+		s.mu.Lock()
+		wm := s.watchManager
+		s.mu.Unlock()
+		if wm == nil {
+			resp.Error = &RPCError{Code: "WATCHER_UNAVAILABLE", Message: "watcher management is not configured"}
+			return resp
+		}
+		var p AddWatchPathParams
+		if err := json.Unmarshal(req.Params, &p); err != nil || strings.TrimSpace(p.Path) == "" {
+			resp.Error = &RPCError{Code: "INVALID_PARAMS", Message: "missing or empty path parameter"}
+			return resp
+		}
+		if err := wm.AddWatchPath(strings.TrimSpace(p.Path)); err != nil {
+			resp.Error = &RPCError{Code: "WATCH_ERROR", Message: err.Error()}
 			return resp
 		}
 		resp.Result = json.RawMessage(`{"status":"ok"}`)

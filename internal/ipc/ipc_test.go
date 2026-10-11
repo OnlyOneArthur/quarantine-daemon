@@ -138,6 +138,70 @@ func TestRPCGetStatus(t *testing.T) {
 	}
 }
 
+// fakeWatchManager records AddWatchPath calls for assertions.
+type fakeWatchManager struct {
+	paths []string
+	err   error
+}
+
+func (f *fakeWatchManager) AddWatchPath(path string) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.paths = append(f.paths, path)
+	return nil
+}
+
+func TestRPCAddWatchPath(t *testing.T) {
+	v := newVault(t)
+	sock, srv := startServer(t, v, ipc.StaticStatusProvider{})
+	wm := &fakeWatchManager{}
+	srv.SetWatchManager(wm)
+
+	client, err := ipc.NewClient(sock)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	if err := client.AddWatchPath(ctx, "  /tmp/evil.bin  "); err != nil {
+		t.Fatalf("AddWatchPath: %v", err)
+	}
+	if len(wm.paths) != 1 || wm.paths[0] != "/tmp/evil.bin" {
+		t.Fatalf("unexpected watch paths recorded: %+v", wm.paths)
+	}
+
+	// An empty path is rejected with INVALID_PARAMS.
+	err = client.AddWatchPath(ctx, "   ")
+	var rpcErr *ipc.RPCError
+	if !errors.As(err, &rpcErr) || rpcErr.Code != "INVALID_PARAMS" {
+		t.Fatalf("expected INVALID_PARAMS, got %v", err)
+	}
+}
+
+func TestRPCAddWatchPathUnavailable(t *testing.T) {
+	v := newVault(t)
+	sock, _ := startServer(t, v, ipc.StaticStatusProvider{})
+
+	client, err := ipc.NewClient(sock)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	defer client.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err = client.AddWatchPath(ctx, "/tmp")
+	var rpcErr *ipc.RPCError
+	if !errors.As(err, &rpcErr) || rpcErr.Code != "WATCHER_UNAVAILABLE" {
+		t.Fatalf("expected WATCHER_UNAVAILABLE, got %v", err)
+	}
+}
+
 func TestRPCEndToEnd(t *testing.T) {
 	v := newVault(t)
 	meta := quarantineOne(t, v, "evil.bin", 95)

@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/quarantine"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/binary"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/pkgbuild"
+	"github.com/OnlyOneArthur/quarantine-daemon/internal/watcher"
 )
 
 // scanResult is the triage outcome normalized across binary and PKGBUILD scorers.
@@ -141,19 +143,50 @@ func (p *pipeline) triage(data []byte, path string) (res scanResult, ok bool, er
 	}, true, nil
 }
 
-// daemonStatus implements ipc.StatusProvider from pipeline counters.
-type daemonStatus struct {
+// daemonController implements ipc.StatusProvider and ipc.WatchManager.
+type daemonController struct {
 	pipeline  *pipeline
+	watcher   *watcher.Watcher
+	cfg       *config.Config
 	startedAt time.Time
 	version   string
+	mu        sync.Mutex
 }
 
-func (s *daemonStatus) Status() ipc.StatusResponse {
-	return ipc.StatusResponse{
-		Uptime:          time.Since(s.startedAt).Seconds(),
-		Version:         s.version,
-		ScannedCount:    s.pipeline.scanned.Load(),
-		QuarantineCount: s.pipeline.quarantined.Load(),
-		WatchPaths:      append([]string(nil), s.pipeline.cfg.Paths.Watch...),
+func newDaemonController(p *pipeline, w *watcher.Watcher, cfg *config.Config, version string) *daemonController {
+	return &daemonController{
+		pipeline:  p,
+		watcher:   w,
+		cfg:       cfg,
+		startedAt: time.Now(),
+		version:   version,
 	}
+}
+
+func (d *daemonController) Status() ipc.StatusResponse {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return ipc.StatusResponse{
+		Uptime:          time.Since(d.startedAt).Seconds(),
+		Version:         d.version,
+		ScannedCount:    d.pipeline.scanned.Load(),
+		QuarantineCount: d.pipeline.quarantined.Load(),
+		WatchPaths:      append([]string(nil), d.cfg.Paths.Watch...),
+	}
+}
+
+func (d *daemonController) AddWatchPath(path string) error {
+	clean := filepath.Clean(config.ExpandHome(path))
+	if err := d.watcher.AddRoot(clean); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for _, p := range d.cfg.Paths.Watch {
+		if p == clean {
+			return nil
+		}
+	}
+	d.cfg.Paths.Watch = append(d.cfg.Paths.Watch, clean)
+	return nil
 }

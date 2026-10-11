@@ -5,3 +5,6 @@ bin/
 .ruff_cache/
 PLAN*.md
 HANDOFF*.md
+
+# demo sandbox (local-only, not committed)
+demo/

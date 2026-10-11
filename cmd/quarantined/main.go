@@ -86,9 +86,10 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	}
 
 	p := newPipeline(cfg, vault, log)
-	status := &daemonStatus{pipeline: p, startedAt: time.Now(), version: Version}
+	ctrl := newDaemonController(p, w, cfg, Version)
 
-	srv := ipc.NewServer(cfg.Service.SocketPath, vault, status)
+	srv := ipc.NewServer(cfg.Service.SocketPath, vault, ctrl)
+	srv.SetWatchManager(ctrl)
 	srvErr := make(chan error, 1)
 	go func() {
 		srvErr <- srv.Start(ctx)

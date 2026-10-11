@@ -167,6 +167,17 @@ func (w *Watcher) Close() error {
 
 func (w *Watcher) AddRoot(path string) error {
 	cleanPath := filepath.Clean(path)
+
+	// Validate before touching w.roots so a typo'd or missing path fails loudly
+	// for the user-facing "watch this path" action. addRecursive stays lenient
+	// because the reconcile walk and startup legitimately see vanished paths.
+	if _, err := os.Lstat(cleanPath); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("watch path does not exist: %s", cleanPath)
+		}
+		return err
+	}
+
 	w.mu.Lock()
 	alreadyExists := false
 	for _, r := range w.roots {
@@ -193,7 +204,7 @@ func (w *Watcher) addRecursive(root string) error {
 	}
 
 	if !info.IsDir() {
-		return nil
+		return w.watchDir(root)
 	}
 
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +28,7 @@ type fakeClient struct {
 
 	restored []string
 	purged   []string
+	added    []string
 	pings    int
 	closed   bool
 }
@@ -81,6 +83,11 @@ func (f *fakeClient) PurgeItem(ctx context.Context, id string) error {
 		return f.purgeErr
 	}
 	f.purged = append(f.purged, id)
+	return nil
+}
+
+func (f *fakeClient) AddWatchPath(ctx context.Context, path string) error {
+	f.added = append(f.added, path)
 	return nil
 }
 
@@ -155,6 +162,9 @@ func startModel(t *testing.T, f *fakeClient) *Model {
 	origTick := tickCmd
 	tickCmd = func() tea.Cmd { return nil }
 	t.Cleanup(func() { tickCmd = origTick })
+	origBlink := blinkTickCmd
+	blinkTickCmd = func(d time.Duration) tea.Cmd { return nil }
+	t.Cleanup(func() { blinkTickCmd = origBlink })
 
 	m := NewModel(func() (Client, error) { return f, nil }, "test")
 	cur, _ := feed(t, m, m.Init())
@@ -455,5 +465,288 @@ func TestHumanBytes(t *testing.T) {
 		if got := humanBytes(in); got != want {
 			t.Errorf("humanBytes(%d)=%q want %q", in, got, want)
 		}
+	}
+}
+
+func TestWatchPaneSelectPreset(t *testing.T) {
+	f := newFakeClient()
+	f.status = &ipc.StatusResponse{
+		WatchPaths: []string{"/tmp"},
+	}
+	m := connectedModel(t, f)
+
+	// Switch to watch pane via '4' key
+	cur, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("4")})
+	m = cur.(*Model)
+	if m.pane != paneWatch {
+		t.Fatalf("expected paneWatch, got %v", m.pane)
+	}
+
+	// Move cursor down and up
+	cur, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("j")})
+	m = cur.(*Model)
+	if m.watchCursor != 1 {
+		t.Fatalf("expected watchCursor=1, got %d", m.watchCursor)
+	}
+
+	cur, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("k")})
+	m = cur.(*Model)
+	if m.watchCursor != 0 {
+		t.Fatalf("expected watchCursor=0, got %d", m.watchCursor)
+	}
+
+	// Select preset 0 (~/Downloads) with enter
+	cur, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = cur.(*Model)
+	cur, _ = feed(t, m, cmd)
+	m = cur.(*Model)
+
+	if len(f.added) != 1 || f.added[0] != "~/Downloads" {
+		t.Fatalf("expected f.added to have [~/Downloads], got %v", f.added)
+	}
+	if !strings.Contains(m.notice, "now watching: ~/Downloads") {
+		t.Fatalf("notice missing success string: %q", m.notice)
+	}
+}
+
+func TestWatchPaneAddCustomPath(t *testing.T) {
+	f := newFakeClient()
+	m := connectedModel(t, f)
+	m.pane = paneWatch
+
+	// Press 'a' to enter custom path mode
+	cur, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m = cur.(*Model)
+	if !m.enteringPath {
+		t.Fatal("expected enteringPath=true")
+	}
+	if m.inputBuffer != "~/Downloads/PKGBUILD" {
+		t.Fatalf("expected initial buffer ~/Downloads/PKGBUILD, got %q", m.inputBuffer)
+	}
+
+	// Delete some runes
+	cur, _ = m.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	m = cur.(*Model)
+	if m.inputBuffer != "~/Downloads/PKGBUIL" {
+		t.Fatalf("expected backspace to remove rune, got %q", m.inputBuffer)
+	}
+
+	// Append character
+	cur, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("D")})
+	m = cur.(*Model)
+	if m.inputBuffer != "~/Downloads/PKGBUILD" {
+		t.Fatalf("expected 'D' appended, got %q", m.inputBuffer)
+	}
+
+	// Submit with enter
+	cur, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = cur.(*Model)
+	cur, _ = feed(t, m, cmd)
+	m = cur.(*Model)
+
+	if m.enteringPath {
+		t.Fatal("expected enteringPath=false after enter")
+	}
+	if m.inputBuffer != "" {
+		t.Fatalf("expected inputBuffer cleared, got %q", m.inputBuffer)
+	}
+	if len(f.added) != 1 || f.added[0] != "~/Downloads/PKGBUILD" {
+		t.Fatalf("expected f.added to have [~/Downloads/PKGBUILD], got %v", f.added)
+	}
+}
+
+func TestWatchPaneCancelCustomInput(t *testing.T) {
+	f := newFakeClient()
+	m := connectedModel(t, f)
+	m.pane = paneWatch
+
+	cur, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("a")})
+	m = cur.(*Model)
+	if !m.enteringPath {
+		t.Fatal("expected enteringPath=true")
+	}
+
+	// Cancel with esc
+	cur, _ = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m = cur.(*Model)
+	if m.enteringPath {
+		t.Fatal("expected enteringPath=false after esc")
+	}
+	if m.inputBuffer != "" {
+		t.Fatalf("expected inputBuffer cleared, got %q", m.inputBuffer)
+	}
+	if len(f.added) != 0 {
+		t.Fatalf("expected no paths added on cancel, got %v", f.added)
+	}
+}
+
+func TestWatchPaneCustomPresetSelect(t *testing.T) {
+	f := newFakeClient()
+	m := connectedModel(t, f)
+	m.pane = paneWatch
+	m.watchCursor = len(defaultWatchPresets) - 1 // custom preset
+
+	// Press space on custom preset
+	cur, _ := m.Update(tea.KeyMsg{Type: tea.KeySpace})
+	m = cur.(*Model)
+	if !m.enteringPath {
+		t.Fatal("expected enteringPath=true on custom preset space")
+	}
+	if m.inputBuffer != "~/Downloads/PKGBUILD" {
+		t.Fatalf("expected initial buffer ~/Downloads/PKGBUILD, got %q", m.inputBuffer)
+	}
+}
+
+func TestIsWatched(t *testing.T) {
+	m := &Model{
+		status: &ipc.StatusResponse{
+			WatchPaths: []string{"/var/tmp"},
+		},
+	}
+
+	// Suffix false positive: /var/tmp must NOT match /tmp preset
+	if m.isWatched("/tmp") {
+		t.Fatal("expected /tmp not to match when only /var/tmp is watched")
+	}
+
+	// Exact match must match
+	if !m.isWatched("/var/tmp") {
+		t.Fatal("expected /var/tmp to match when /var/tmp is watched")
+	}
+
+	// Empty candidate or nil status
+	if m.isWatched("") {
+		t.Fatal("expected empty path to return false")
+	}
+	nilModel := &Model{}
+	if nilModel.isWatched("/var/tmp") {
+		t.Fatal("expected nil status to return false")
+	}
+}
+
+// newBlinkModel builds a wide dashboard model with the blink tick stubbed, so
+// tests drive blinkMsg by hand. It does not go through startModel because that
+// helper installs its own blink stub before the emblem is ever on screen.
+func newBlinkModel(t *testing.T, width, height int) *Model {
+	t.Helper()
+	orig := blinkTickCmd
+	blinkTickCmd = func(d time.Duration) tea.Cmd { return func() tea.Msg { return nil } }
+	t.Cleanup(func() { blinkTickCmd = orig })
+
+	m := NewModel(func() (Client, error) { return newFakeClient(), nil }, "test")
+	m.pane = paneDashboard
+	cur, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: height})
+	got, ok := cur.(*Model)
+	if !ok {
+		t.Fatalf("Update returned %T, want *Model", cur)
+	}
+	return got
+}
+
+// TestBlinkSequenceAdvances asserts the eye blink walks blinkSequence end to
+// end and wraps, and that every step schedules the delay blinkDelays declares.
+// The emblem must also come up already open, not mid-shutter.
+func TestBlinkSequenceAdvances(t *testing.T) {
+	var delays []time.Duration
+	orig := blinkTickCmd
+	blinkTickCmd = func(d time.Duration) tea.Cmd {
+		delays = append(delays, d)
+		return func() tea.Msg { return nil }
+	}
+	t.Cleanup(func() { blinkTickCmd = orig })
+
+	m := NewModel(func() (Client, error) { return newFakeClient(), nil }, "test")
+	m.pane = paneDashboard
+	cur, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m = cur.(*Model)
+
+	if !m.blinkActive {
+		t.Fatal("blink loop not started on wide dashboard")
+	}
+	if m.blinkStep != 0 {
+		t.Fatalf("blinkStep = %d, want 0 (eye starts open)", m.blinkStep)
+	}
+	if len(delays) != 1 || delays[0] != blinkDelays[0] {
+		t.Fatalf("first blink delay = %v, want [%v]", delays, blinkDelays[0])
+	}
+
+	var frames []int
+	for range blinkSequence {
+		frames = append(frames, blinkSequence[m.blinkStep])
+		cur, cmd := m.Update(blinkMsg(time.Now()))
+		var ok bool
+		if m, ok = cur.(*Model); !ok {
+			t.Fatalf("Update returned %T, want *Model", cur)
+		}
+		if cmd == nil {
+			t.Fatalf("blink tick not rescheduled at step %d", m.blinkStep)
+		}
+	}
+	if m.blinkStep != 0 {
+		t.Errorf("blinkStep = %d after a full cycle, want wrap to 0", m.blinkStep)
+	}
+	if got := fmt.Sprint(frames); got != "[0 1 2 3 2 1]" {
+		t.Errorf("blink frames = %s, want [0 1 2 3 2 1] (open to shut and back)", got)
+	}
+	if len(delays) != len(blinkDelays)+1 {
+		t.Fatalf("recorded %d delays, want %d", len(delays), len(blinkDelays)+1)
+	}
+	for i, want := range blinkDelays {
+		if delays[i] != want {
+			t.Errorf("delay[%d] = %v, want %v", i, delays[i], want)
+		}
+	}
+}
+
+// TestBlinkStopsWhenEyeHidden asserts leaving the dashboard stops the blink
+// loop and resets it, and that a tick already in flight cannot restart it.
+func TestBlinkStopsWhenEyeHidden(t *testing.T) {
+	m := newBlinkModel(t, 100, 30)
+	m.blinkStep = 3
+
+	cur, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	var ok bool
+	if m, ok = cur.(*Model); !ok {
+		t.Fatalf("Update returned %T, want *Model", cur)
+	}
+	if m.pane != paneVault {
+		t.Fatalf("pane = %v, want vault", m.pane)
+	}
+	if m.blinkActive {
+		t.Error("blink loop still active after leaving dashboard")
+	}
+	if m.blinkStep != 0 {
+		t.Errorf("blinkStep = %d after leaving dashboard, want 0", m.blinkStep)
+	}
+	if _, cmd := m.Update(blinkMsg(time.Now())); cmd != nil {
+		t.Error("in-flight blink tick rescheduled while eye off screen")
+	}
+}
+
+// TestBlinkResumesAfterLeavingAndReturning asserts the loop starts again when
+// the dashboard comes back, and that a narrow terminal never starts it.
+func TestBlinkResumesAfterLeavingAndReturning(t *testing.T) {
+	m := newBlinkModel(t, 100, 30)
+	cur, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	m = cur.(*Model)
+	if m.blinkActive {
+		t.Fatal("blink loop survived leaving the dashboard")
+	}
+
+	cur, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	m = cur.(*Model)
+	if m.pane != paneDashboard {
+		t.Fatalf("pane = %v, want dashboard", m.pane)
+	}
+	if !m.blinkActive {
+		t.Error("blink loop did not restart on return to dashboard")
+	}
+	if cmd == nil {
+		t.Error("no blink tick returned on return to dashboard")
+	}
+
+	narrow := newBlinkModel(t, 40, 18)
+	if narrow.blinkActive {
+		t.Error("blink loop started on a terminal too narrow for the emblem")
 	}
 }

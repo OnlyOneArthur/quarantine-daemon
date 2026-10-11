@@ -3,6 +3,7 @@ package watcher
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -280,5 +281,51 @@ loop:
 
 	if !found {
 		t.Fatalf("queue overflow reconciliation failed to discover %s", fileX)
+	}
+}
+
+func TestAddRoot(t *testing.T) {
+	tempDir := t.TempDir()
+
+	w, err := New(Config{
+		Roots:         []string{tempDir},
+		DebounceDelay: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("failed to create watcher: %v", err)
+	}
+	defer w.Close()
+
+	// 1. AddRoot on non-existent path must fail loudly
+	missingPath := filepath.Join(tempDir, "does_not_exist_dir", "missing")
+	err = w.AddRoot(missingPath)
+	if err == nil {
+		t.Fatalf("expected error adding non-existent path %s, got nil", missingPath)
+	}
+	wantPrefix := "watch path does not exist:"
+	if !strings.Contains(err.Error(), wantPrefix) {
+		t.Fatalf("expected error containing %q, got: %v", wantPrefix, err)
+	}
+
+	// 2. AddRoot on existing individual file works and appears in WatchedDirs()
+	filePath := filepath.Join(tempDir, "standalone.txt")
+	if err := os.WriteFile(filePath, []byte("content"), 0644); err != nil {
+		t.Fatalf("failed to create file: %v", err)
+	}
+
+	if err := w.AddRoot(filePath); err != nil {
+		t.Fatalf("expected AddRoot on individual file to succeed, got: %v", err)
+	}
+
+	watchedDirs := w.WatchedDirs()
+	found := false
+	for _, d := range watchedDirs {
+		if d == filePath {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected file %s to appear in WatchedDirs: %v", filePath, watchedDirs)
 	}
 }

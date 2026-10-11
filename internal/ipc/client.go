@@ -120,7 +120,7 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 // transport failure.
 func isIdempotent(method string) bool {
 	switch method {
-	case MethodPing, MethodGetStatus, MethodListVault, MethodInspectItem:
+	case MethodPing, MethodGetStatus, MethodListVault, MethodInspectItem, MethodAddWatchPath:
 		return true
 	default:
 		return false
@@ -202,6 +202,11 @@ func (c *Client) RestoreItem(ctx context.Context, id, destPath string) error {
 // PurgeItem permanently deletes a quarantined item and its sidecar.
 func (c *Client) PurgeItem(ctx context.Context, id string) error {
 	return c.call(ctx, MethodPurgeItem, ItemParams{ID: id}, nil)
+}
+
+// AddWatchPath instructs the daemon to watch an additional file or directory path.
+func (c *Client) AddWatchPath(ctx context.Context, path string) error {
+	return c.call(ctx, MethodAddWatchPath, AddWatchPathParams{Path: path}, nil)
 }
 
 // IsNotFound reports whether err is an ITEM_NOT_FOUND protocol error.

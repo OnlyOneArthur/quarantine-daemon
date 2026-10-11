@@ -9,12 +9,13 @@ import (
 
 // Method names understood by the server.
 const (
-	MethodPing        = "Ping"
-	MethodGetStatus   = "GetStatus"
-	MethodListVault   = "ListVault"
-	MethodInspectItem = "InspectItem"
-	MethodRestoreItem = "RestoreItem"
-	MethodPurgeItem   = "PurgeItem"
+	MethodPing         = "Ping"
+	MethodGetStatus    = "GetStatus"
+	MethodListVault    = "ListVault"
+	MethodInspectItem  = "InspectItem"
+	MethodRestoreItem  = "RestoreItem"
+	MethodPurgeItem    = "PurgeItem"
+	MethodAddWatchPath = "AddWatchPath"
 )
 
 // Request is a single newline-delimited JSON RPC request.
@@ -47,6 +48,11 @@ type ItemParams struct {
 	ID string `json:"id"`
 	// DestPath optionally overrides the restore destination for RestoreItem.
 	DestPath string `json:"dest_path,omitempty"`
+}
+
+// AddWatchPathParams are the parameters for AddWatchPath.
+type AddWatchPathParams struct {
+	Path string `json:"path"`
 }
 
 // StatusResponse is the payload for GetStatus.

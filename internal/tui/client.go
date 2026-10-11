@@ -15,6 +15,7 @@ type Client interface {
 	InspectItem(ctx context.Context, id string) (*quarantine.ItemMetadata, error)
 	RestoreItem(ctx context.Context, id, destPath string) error
 	PurgeItem(ctx context.Context, id string) error
+	AddWatchPath(ctx context.Context, path string) error
 	Close() error
 }
 
