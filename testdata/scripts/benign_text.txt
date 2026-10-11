@@ -1,0 +1,2 @@
+This is a benign text file containing documentation and comments.
+No threats here.

@@ -1,0 +1,35 @@
+# systemd user service unit for quarantined
+#
+# Installation:
+#   mkdir -p ~/.config/systemd/user
+#   cp systemd/quarantined.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now quarantined
+#
+# Verification:
+#   systemctl --user status quarantined
+#   journalctl --user -u quarantined -f
+
+[Unit]
+Description=Quarantine Daemon - Real-time zero-day host containment daemon
+Documentation=https://github.com/OnlyOneArthur/quarantine-daemon
+After=default.target
+
+[Service]
+Type=exec
+ExecStart=%h/.local/bin/quarantined
+Restart=on-failure
+RestartSec=2s
+
+# Sandboxing & security hardening
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/Downloads /tmp %h/.local/share/quarantined %t
+PrivateTmp=false
+NoNewPrivileges=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+
+[Install]
+WantedBy=default.target
