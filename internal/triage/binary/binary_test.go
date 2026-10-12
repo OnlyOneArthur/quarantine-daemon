@@ -80,9 +80,23 @@ func TestDetector(t *testing.T) {
 		t.Fatalf("expected FormatMachO, got %s", got)
 	}
 
-	machoFat := []byte{0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00}
+	// Universal FAT with one complete 20-byte arch entry.
+	machoFat := make([]byte, 28)
+	binary.BigEndian.PutUint32(machoFat[0:4], 0xCAFEBABE)
+	binary.BigEndian.PutUint32(machoFat[4:8], 1)           // nfat_arch
+	binary.BigEndian.PutUint32(machoFat[8:12], 0x01000007) // CPU_TYPE_X86_64
+	binary.BigEndian.PutUint32(machoFat[12:16], 3)         // CPU_SUBTYPE_X86_64_ALL
+	binary.BigEndian.PutUint32(machoFat[16:20], 0x1000)    // offset
+	binary.BigEndian.PutUint32(machoFat[20:24], 0x1000)    // size
+	binary.BigEndian.PutUint32(machoFat[24:28], 12)        // align
 	if got := DetectFormat(machoFat); got != FormatMachO {
 		t.Fatalf("expected FormatMachO, got %s", got)
+	}
+
+	// A Java class file shares the CAFEBABE magic but has no FAT arch table.
+	javaClass := []byte{0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x34, 0x00, 0x01, 0x00, 0x02}
+	if got := DetectFormat(javaClass); got != FormatUnknown {
+		t.Fatalf("expected FormatUnknown for Java class, got %s", got)
 	}
 
 	// PE

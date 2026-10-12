@@ -57,6 +57,22 @@ func TestNetworkPipeToDash(t *testing.T) {
 	t.Fatalf("missing pipe_network_to_shell for dash: %+v", triggers)
 }
 
+func TestUntrustedSourceReportsSourceLine(t *testing.T) {
+	analysis, err := ParsePKGBUILD([]byte("pkgname=example\nsource=(\n  'https://example.com/ok'\n  'https://bit.ly/evil'\n)\n"), "PKGBUILD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	triggers := CheckUntrustedSources(analysis, config.DefaultConfig())
+	if len(triggers) != 2 {
+		t.Fatalf("triggers = %+v, want shortener and blocked", triggers)
+	}
+	for _, tr := range triggers {
+		if tr.Line != 4 {
+			t.Errorf("%s line = %d, want 4", tr.Name, tr.Line)
+		}
+	}
+}
+
 func TestUntrustedIPv6Source(t *testing.T) {
 	analysis, err := ParsePKGBUILD([]byte("source=('https://[2001:db8::1]/x')\n"), "PKGBUILD")
 	if err != nil {

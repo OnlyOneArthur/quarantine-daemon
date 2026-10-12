@@ -24,7 +24,7 @@ INSTALL_SERVICE=1
 ENABLE_SERVICE=1
 
 usage() {
-    sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() {

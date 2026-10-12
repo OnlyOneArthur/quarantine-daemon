@@ -45,6 +45,9 @@ func newPipeline(cfg *config.Config, vault *quarantine.Vault, log *slog.Logger) 
 // handlePath triages one regular file. It returns the vault metadata when the file
 // was quarantined, or nil when the file was skipped or left in place (PASS/ALERT).
 func (p *pipeline) handlePath(path string) (*quarantine.ItemMetadata, error) {
+	if p.cfg.Binary.MaxScanSizeMB <= 0 || p.cfg.Binary.MaxScanSizeMB > (1<<63-1)/(1024*1024) {
+		return nil, fmt.Errorf("max_scan_size_mb must be positive and fit in int64")
+	}
 	maxBytes := p.cfg.Binary.MaxScanSizeMB * 1024 * 1024
 
 	sf, err := fsutil.OpenSafe(path)

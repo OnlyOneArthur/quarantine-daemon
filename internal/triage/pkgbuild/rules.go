@@ -57,7 +57,11 @@ func CheckUntrustedSources(analysis *PKGBUILDAnalysis, cfg *config.Config) []Thr
 
 	untrustedCount := 0
 
-	for _, src := range analysis.Source {
+	for i, src := range analysis.Source {
+		line := 1
+		if i < len(analysis.SourceLines) && analysis.SourceLines[i] > 0 {
+			line = analysis.SourceLines[i]
+		}
 		rawURL := src
 		if idx := strings.Index(rawURL, "::"); idx != -1 {
 			// Only treat "::" as a VCS name separator (pkgname::url); never
@@ -97,7 +101,7 @@ func CheckUntrustedSources(analysis *PKGBUILDAnalysis, cfg *config.Config) []Thr
 				Name:        "untrusted_source_raw_ip",
 				Description: description,
 				ScoreWeight: 30,
-				Line:        1,
+				Line:        line,
 				Scope:       ScopeRoot,
 			})
 			untrustedCount++
@@ -111,7 +115,7 @@ func CheckUntrustedSources(analysis *PKGBUILDAnalysis, cfg *config.Config) []Thr
 				Name:        "untrusted_source_shortener",
 				Description: "Source URL uses URL shortener: " + host,
 				ScoreWeight: 30,
-				Line:        1,
+				Line:        line,
 				Scope:       ScopeRoot,
 			})
 			untrustedCount++
@@ -125,7 +129,7 @@ func CheckUntrustedSources(analysis *PKGBUILDAnalysis, cfg *config.Config) []Thr
 				Name:        "untrusted_source_pastebin",
 				Description: "Source URL hosted on pastebin service: " + host,
 				ScoreWeight: 30,
-				Line:        1,
+				Line:        line,
 				Scope:       ScopeRoot,
 			})
 			untrustedCount++
@@ -139,7 +143,7 @@ func CheckUntrustedSources(analysis *PKGBUILDAnalysis, cfg *config.Config) []Thr
 				Name:        "untrusted_source_discord_cdn",
 				Description: "Source URL hosted on Discord CDN: " + host,
 				ScoreWeight: 30,
-				Line:        1,
+				Line:        line,
 				Scope:       ScopeRoot,
 			})
 			untrustedCount++
@@ -153,7 +157,7 @@ func CheckUntrustedSources(analysis *PKGBUILDAnalysis, cfg *config.Config) []Thr
 			Name:        "untrusted_source_blocked",
 			Description: "Untrusted source link flagged by daemon security policy",
 			ScoreWeight: 25,
-			Line:        1,
+			Line:        triggers[0].Line,
 			Scope:       ScopeRoot,
 		})
 	}

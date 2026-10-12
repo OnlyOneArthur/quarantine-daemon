@@ -370,10 +370,12 @@ func (v *Vault) Restore(id string, customDestPath string) error {
 		if err != nil {
 			return fmt.Errorf("open artifact: %w", err)
 		}
-		defer src.Close()
-
 		if _, err := io.Copy(dst, src.File); err != nil {
+			_ = src.Close()
 			return fmt.Errorf("copy artifact: %w", err)
+		}
+		if err := src.Close(); err != nil {
+			return fmt.Errorf("close artifact: %w", err)
 		}
 		if err := dst.Sync(); err != nil {
 			return fmt.Errorf("sync destination: %w", err)

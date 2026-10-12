@@ -861,7 +861,7 @@ func (m *Model) renderWatchPane() string {
 		dimStyle.Render("  • ~/.cache/yay         - AUR helper build cache directory"),
 		"",
 		valueStyle.Render("Target specific files directly:"),
-		dimStyle.Render("  • ~/Downloads/PKGBUILD - track Arch package builds before makepkg"),
+		dimStyle.Render("  • " + customWatchPath + " - track Arch package builds before makepkg"),
 		dimStyle.Render("  • /tmp/malicious.bin   - track specific high-risk executable drops"),
 	}
 	b.WriteString(m.renderFrame(guideLines, colBorder, m.boxWidth(maxFrameWidth)))

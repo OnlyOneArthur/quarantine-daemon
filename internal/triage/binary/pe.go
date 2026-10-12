@@ -28,6 +28,9 @@ func AnalyzePE(data []byte) (*PEAnalysis, error) {
 	if err == nil {
 		defer f.Close()
 
+		var fallbackEntropy float64
+		var hasFallback bool
+		var hasText bool
 		for _, sec := range f.Sections {
 			// Check for RWX sections: IMAGE_SCN_MEM_EXECUTE (0x20000000) & IMAGE_SCN_MEM_WRITE (0x80000000)
 			const (
@@ -41,9 +44,18 @@ func AnalyzePE(data []byte) (*PEAnalysis, error) {
 			if sec.Name == ".text" || sec.Characteristics&IMAGE_SCN_MEM_EXECUTE != 0 {
 				secData, err := sec.Data()
 				if err == nil && len(secData) > 0 {
-					analysis.TextEntropy = entropy.Calculate(secData)
+					if sec.Name == ".text" {
+						analysis.TextEntropy = entropy.Calculate(secData)
+						hasText = true
+					} else if !hasFallback {
+						fallbackEntropy = entropy.Calculate(secData)
+						hasFallback = true
+					}
 				}
 			}
+		}
+		if !hasText && hasFallback {
+			analysis.TextEntropy = fallbackEntropy
 		}
 
 		// Check imported symbols

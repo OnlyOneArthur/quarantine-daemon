@@ -151,8 +151,7 @@ func checkSymbol(name string, analysis *ELFAnalysis) {
 }
 
 func checkCapabilityString(str string, analysis *ELFAnalysis) {
-	targets := []string{"memfd_create", "process_vm_writev", "VirtualAllocEx", "ptrace", "socket", "connect"}
-	for _, t := range targets {
+	for _, t := range capStrings {
 		if strings.Contains(str, t) {
 			addCapability(analysis, t)
 		}

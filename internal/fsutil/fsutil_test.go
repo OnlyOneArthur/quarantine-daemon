@@ -30,11 +30,6 @@ func TestOpenSafeRegularFile(t *testing.T) {
 		t.Errorf("expected non-zero inode")
 	}
 
-	match, err := VerifyInodeMatch(sf.File, sf.Dev, sf.Ino)
-	if err != nil || !match {
-		t.Errorf("expected inode match: %v, err: %v", match, err)
-	}
-
 	pathMatch, err := VerifyPathInodeMatch(filePath, sf.Dev, sf.Ino)
 	if err != nil || !pathMatch {
 		t.Errorf("expected path inode match: %v, err: %v", pathMatch, err)

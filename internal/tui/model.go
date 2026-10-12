@@ -24,7 +24,8 @@ const (
 	// minBackoff is the first reconnect delay after a failed dial.
 	minBackoff = 500 * time.Millisecond
 	// maxBackoff caps the exponential reconnect delay.
-	maxBackoff = 30 * time.Second
+	maxBackoff      = 30 * time.Second
+	customWatchPath = "~/Downloads/PKGBUILD"
 )
 
 type pane int
@@ -597,7 +598,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, keys.AddCustom):
 		m.enteringPath = true
-		m.inputBuffer = "~/Downloads/PKGBUILD"
+		m.inputBuffer = customWatchPath
 		return m, nil
 	case key.Matches(msg, keys.Help):
 		m.help.ShowAll = !m.help.ShowAll
@@ -618,7 +619,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				preset := defaultWatchPresets[m.watchCursor]
 				if preset.Path == "" {
 					m.enteringPath = true
-					m.inputBuffer = "~/Downloads/PKGBUILD"
+					m.inputBuffer = customWatchPath
 					return m, nil
 				}
 				return m, addWatchCmd(m.client, preset.Path)
@@ -830,13 +831,13 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
-// verdictFor derives a coarse verdict label from a quarantine score. Thresholds
-// mirror the PKGBUILD scorer (85 quarantine, 50 suspect).
+// verdictFor derives a coarse verdict label from a quarantine score, using the
+// same thresholds the vault table renders with.
 func verdictFor(score int) string {
 	switch {
-	case score >= 85:
+	case score >= quarantineScore:
 		return "QUARANTINE"
-	case score >= 50:
+	case score >= suspectScore:
 		return "SUSPECT"
 	default:
 		return "LOW"

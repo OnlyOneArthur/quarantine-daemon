@@ -101,21 +101,33 @@ func processAssign(analysis *PKGBUILDAnalysis, assign *syntax.Assign) {
 	}
 	varName := assign.Name.Value
 
+	line := 0
+	if pos := assign.Pos(); pos.IsValid() {
+		line = int(pos.Line())
+	}
+
 	var vals []string
+	var lines []int
 	if assign.Value != nil {
 		vals = append(vals, WordToString(assign.Value))
+		lines = append(lines, line)
 	} else if assign.Array != nil {
 		for _, elem := range assign.Array.Elems {
 			if elem != nil && elem.Value != nil {
 				vals = append(vals, WordToString(elem.Value))
+				valueLine := line
+				if pos := elem.Value.Pos(); pos.IsValid() {
+					valueLine = int(pos.Line())
+				}
+				lines = append(lines, valueLine)
 			}
 		}
 	}
 
-	assignVariable(analysis, varName, vals, assign.Append)
+	assignVariable(analysis, varName, vals, assign.Append, lines)
 }
 
-func assignVariable(analysis *PKGBUILDAnalysis, name string, vals []string, isAppend bool) {
+func assignVariable(analysis *PKGBUILDAnalysis, name string, vals []string, isAppend bool, lines []int) {
 	firstVal := ""
 	if len(vals) > 0 {
 		firstVal = vals[0]
@@ -140,7 +152,9 @@ func assignVariable(analysis *PKGBUILDAnalysis, name string, vals []string, isAp
 			analysis.Source = append(analysis.Source, vals...)
 		} else {
 			analysis.Source = vals
+			analysis.SourceLines = analysis.SourceLines[:0]
 		}
+		analysis.SourceLines = append(analysis.SourceLines, lines...)
 	case name == "sha256sums" || strings.HasPrefix(name, "sha256sums_"):
 		if isAppend {
 			analysis.Sha256sums = append(analysis.Sha256sums, vals...)

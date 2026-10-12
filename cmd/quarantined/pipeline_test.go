@@ -184,6 +184,20 @@ func TestOversizeFileIsSkipped(t *testing.T) {
 	}
 }
 
+func TestNonPositiveMaxScanSizeErrorsWithoutChangingSource(t *testing.T) {
+	p, _, cfg, root := newTestPipeline(t)
+	cfg.Binary.MaxScanSizeMB = 0
+	payload := []byte("preserve this file")
+	path := writeFixture(t, filepath.Join(root, "watch"), "payload.bin", payload)
+	if _, err := p.handlePath(path); err == nil || !strings.Contains(err.Error(), "max_scan_size_mb must be positive") {
+		t.Fatalf("handlePath error = %v, want invalid max scan size", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("source changed after config error: data=%q, err=%v", got, err)
+	}
+}
+
 func TestIgnoredKindsSkippedWhenDisabled(t *testing.T) {
 	p, _, cfg, root := newTestPipeline(t)
 	cfg.PKGBUILD.Enabled = false

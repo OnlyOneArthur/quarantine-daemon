@@ -26,13 +26,5 @@ func Calculate(data []byte) float64 {
 		}
 	}
 
-	// Clamp to theoretical bounds [0.0, 8.0] to guard against floating-point inaccuracies
-	if ent < 0.0 {
-		return 0.0
-	}
-	if ent > 8.0 {
-		return 8.0
-	}
-
 	return ent
 }

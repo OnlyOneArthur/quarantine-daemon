@@ -31,6 +31,5 @@ func Init(levelStr string, w io.Writer) *slog.Logger {
 
 	handler := slog.NewTextHandler(w, opts)
 	l := slog.New(handler)
-	slog.SetDefault(l)
 	return l
 }

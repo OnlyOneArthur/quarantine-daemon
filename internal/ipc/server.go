@@ -277,6 +277,25 @@ func (s *Server) handleConn(conn net.Conn) {
 	}
 }
 
+// vaultOrError returns the configured vault, or records VAULT_UNAVAILABLE on resp.
+func (s *Server) vaultOrError(resp *Response) *quarantine.Vault {
+	if s.vault == nil {
+		resp.Error = &RPCError{Code: "VAULT_UNAVAILABLE", Message: "quarantine vault is not configured"}
+		return nil
+	}
+	return s.vault
+}
+
+// decodeItemParams decodes an ItemParams payload, or records INVALID_PARAMS on resp.
+func decodeItemParams(req *Request, resp *Response) (ItemParams, bool) {
+	var p ItemParams
+	if err := json.Unmarshal(req.Params, &p); err != nil || p.ID == "" {
+		resp.Error = &RPCError{Code: "INVALID_PARAMS", Message: "missing or invalid id parameter"}
+		return p, false
+	}
+	return p, true
+}
+
 func (s *Server) dispatch(req *Request) *Response {
 	resp := &Response{ID: req.ID}
 
@@ -297,11 +316,11 @@ func (s *Server) dispatch(req *Request) *Response {
 		resp.Result = data
 
 	case MethodListVault:
-		if s.vault == nil {
-			resp.Error = &RPCError{Code: "VAULT_UNAVAILABLE", Message: "quarantine vault is not configured"}
+		v := s.vaultOrError(resp)
+		if v == nil {
 			return resp
 		}
-		items, err := s.vault.List()
+		items, err := v.List()
 		if err != nil {
 			resp.Error = &RPCError{Code: "VAULT_ERROR", Message: err.Error()}
 			return resp
@@ -314,16 +333,15 @@ func (s *Server) dispatch(req *Request) *Response {
 		resp.Result = data
 
 	case MethodInspectItem:
-		if s.vault == nil {
-			resp.Error = &RPCError{Code: "VAULT_UNAVAILABLE", Message: "quarantine vault is not configured"}
+		v := s.vaultOrError(resp)
+		if v == nil {
 			return resp
 		}
-		var p ItemParams
-		if err := json.Unmarshal(req.Params, &p); err != nil || p.ID == "" {
-			resp.Error = &RPCError{Code: "INVALID_PARAMS", Message: "missing or invalid id parameter"}
+		p, ok := decodeItemParams(req, resp)
+		if !ok {
 			return resp
 		}
-		meta, err := s.vault.Inspect(p.ID)
+		meta, err := v.Inspect(p.ID)
 		if err != nil {
 			if errors.Is(err, quarantine.ErrItemNotFound) {
 				resp.Error = &RPCError{Code: "ITEM_NOT_FOUND", Message: err.Error()}
@@ -340,16 +358,15 @@ func (s *Server) dispatch(req *Request) *Response {
 		resp.Result = data
 
 	case MethodRestoreItem:
-		if s.vault == nil {
-			resp.Error = &RPCError{Code: "VAULT_UNAVAILABLE", Message: "quarantine vault is not configured"}
+		v := s.vaultOrError(resp)
+		if v == nil {
 			return resp
 		}
-		var p ItemParams
-		if err := json.Unmarshal(req.Params, &p); err != nil || p.ID == "" {
-			resp.Error = &RPCError{Code: "INVALID_PARAMS", Message: "missing or invalid id parameter"}
+		p, ok := decodeItemParams(req, resp)
+		if !ok {
 			return resp
 		}
-		if err := s.vault.Restore(p.ID, p.DestPath); err != nil {
+		if err := v.Restore(p.ID, p.DestPath); err != nil {
 			if errors.Is(err, quarantine.ErrItemNotFound) {
 				resp.Error = &RPCError{Code: "ITEM_NOT_FOUND", Message: err.Error()}
 			} else {
@@ -360,16 +377,15 @@ func (s *Server) dispatch(req *Request) *Response {
 		resp.Result = json.RawMessage(`{"status":"ok"}`)
 
 	case MethodPurgeItem:
-		if s.vault == nil {
-			resp.Error = &RPCError{Code: "VAULT_UNAVAILABLE", Message: "quarantine vault is not configured"}
+		v := s.vaultOrError(resp)
+		if v == nil {
 			return resp
 		}
-		var p ItemParams
-		if err := json.Unmarshal(req.Params, &p); err != nil || p.ID == "" {
-			resp.Error = &RPCError{Code: "INVALID_PARAMS", Message: "missing or invalid id parameter"}
+		p, ok := decodeItemParams(req, resp)
+		if !ok {
 			return resp
 		}
-		if err := s.vault.Purge(p.ID); err != nil {
+		if err := v.Purge(p.ID); err != nil {
 			if errors.Is(err, quarantine.ErrItemNotFound) {
 				resp.Error = &RPCError{Code: "ITEM_NOT_FOUND", Message: err.Error()}
 			} else {

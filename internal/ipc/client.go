@@ -87,13 +87,21 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 	}
 	payload = append(payload, '\n')
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if c.conn == nil {
+		if err := c.dial(); err != nil {
+			return err
+		}
+	}
 	line, err := c.exchange(ctx, payload)
 	if err != nil {
+		if !isIdempotent(method) || ctx.Err() != nil {
+			return err
+		}
 		if dialErr := c.dial(); dialErr != nil {
 			return dialErr
-		}
-		if !isIdempotent(method) {
-			return err
 		}
 		line, err = c.exchange(ctx, payload)
 		if err != nil {
@@ -133,18 +141,39 @@ func (c *Client) exchange(ctx context.Context, payload []byte) ([]byte, error) {
 	if c.conn == nil {
 		return nil, errors.New("not connected")
 	}
+	if err := ctx.Err(); err != nil {
+		c.drop()
+		return nil, err
+	}
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = c.conn.SetDeadline(deadline)
 	} else {
 		_ = c.conn.SetDeadline(time.Time{})
 	}
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func(conn net.Conn) {
+		defer close(stopped)
+		select {
+		case <-ctx.Done():
+			_ = conn.SetDeadline(time.Now())
+		case <-done:
+		}
+	}(c.conn)
+	defer func() { close(done); <-stopped }()
 	if _, err := c.conn.Write(payload); err != nil {
 		c.drop()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("write request: %w", err)
 	}
 	line, err := c.rd.ReadBytes('\n')
 	if err != nil {
 		c.drop()
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 	return line, nil

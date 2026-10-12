@@ -37,10 +37,26 @@ func DetectFormat(data []byte) Format {
 		magic := binary.BigEndian.Uint32(data[:4])
 		switch magic {
 		case 0xFEEDFACE, 0xCEFAEDFE, // Mach-O 32-bit (BE, LE)
-			0xFEEDFACF, 0xCFFAEDFE, // Mach-O 64-bit (BE, LE)
-			0xCAFEBABE, 0xBEBAFECA, // Mach-O Universal FAT 32-bit
-			0xCAFEBABF, 0xBFBAFECA: // Mach-O Universal FAT 64-bit
+			0xFEEDFACF, 0xCFFAEDFE: // Mach-O 64-bit (BE, LE)
 			return FormatMachO
+		case 0xCAFEBABE, 0xBEBAFECA, 0xCAFEBABF, 0xBFBAFECA:
+			// Java classes share CAFEBABE; require a complete FAT arch table.
+			if len(data) < 8 {
+				return FormatUnknown
+			}
+			var narch uint64
+			if magic == 0xBEBAFECA || magic == 0xBFBAFECA {
+				narch = uint64(binary.LittleEndian.Uint32(data[4:8]))
+			} else {
+				narch = uint64(binary.BigEndian.Uint32(data[4:8]))
+			}
+			archSize := uint64(20)
+			if magic == 0xCAFEBABF || magic == 0xBFBAFECA {
+				archSize = 32
+			}
+			if narch > 0 && narch <= (uint64(len(data))-8)/archSize {
+				return FormatMachO
+			}
 		}
 	}
 

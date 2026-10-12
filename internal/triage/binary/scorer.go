@@ -2,6 +2,7 @@ package binary
 
 import (
 	"bytes"
+	"sort"
 	"strings"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
@@ -116,6 +117,20 @@ func calculateCappedScore(triggers []ThreatTrigger, isGo, isRust bool, quarantin
 	return total, verdict, dampeners
 }
 
+// categoriesHit returns a stable list of distinct trigger categories.
+func categoriesHit(triggers []ThreatTrigger) []string {
+	seen := make(map[string]struct{})
+	for _, tr := range triggers {
+		seen[tr.Category] = struct{}{}
+	}
+	categories := make([]string, 0, len(seen))
+	for category := range seen {
+		categories = append(categories, category)
+	}
+	sort.Strings(categories)
+	return categories
+}
+
 // ScoreELF computes the correlated multi-category threat score for an ELF analysis.
 func ScoreELF(analysis *ELFAnalysis, cfg *config.Config, path string) *TriageResult {
 	if cfg == nil {
@@ -215,13 +230,7 @@ func ScoreELF(analysis *ELFAnalysis, cfg *config.Config, path string) *TriageRes
 	res.Verdict = verdict
 	res.DampenersApplied = dampeners
 
-	catMap := make(map[string]struct{})
-	for _, tr := range res.Triggers {
-		catMap[tr.Category] = struct{}{}
-	}
-	for cat := range catMap {
-		res.CategoriesHit = append(res.CategoriesHit, cat)
-	}
+	res.CategoriesHit = categoriesHit(res.Triggers)
 
 	return res
 }
@@ -298,13 +307,7 @@ func ScorePE(analysis *PEAnalysis, cfg *config.Config, path string) *TriageResul
 	res.Verdict = verdict
 	res.DampenersApplied = dampeners
 
-	catMap := make(map[string]struct{})
-	for _, tr := range res.Triggers {
-		catMap[tr.Category] = struct{}{}
-	}
-	for cat := range catMap {
-		res.CategoriesHit = append(res.CategoriesHit, cat)
-	}
+	res.CategoriesHit = categoriesHit(res.Triggers)
 
 	return res
 }
@@ -381,13 +384,7 @@ func ScoreMachO(analysis *MachOAnalysis, cfg *config.Config, path string) *Triag
 	res.Verdict = verdict
 	res.DampenersApplied = dampeners
 
-	catMap := make(map[string]struct{})
-	for _, tr := range res.Triggers {
-		catMap[tr.Category] = struct{}{}
-	}
-	for cat := range catMap {
-		res.CategoriesHit = append(res.CategoriesHit, cat)
-	}
+	res.CategoriesHit = categoriesHit(res.Triggers)
 
 	return res
 }
@@ -502,13 +499,7 @@ func TriageBinary(data []byte, path string, cfg *config.Config) (*TriageResult, 
 	res.Verdict = verdict
 	res.DampenersApplied = dampeners
 
-	catMap := make(map[string]struct{})
-	for _, tr := range res.Triggers {
-		catMap[tr.Category] = struct{}{}
-	}
-	for cat := range catMap {
-		res.CategoriesHit = append(res.CategoriesHit, cat)
-	}
+	res.CategoriesHit = categoriesHit(res.Triggers)
 
 	return res, nil
 }

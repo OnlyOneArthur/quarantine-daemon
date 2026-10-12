@@ -49,20 +49,6 @@ func OpenSafe(path string) (*SafeFile, error) {
 	}, nil
 }
 
-// VerifyInodeMatch verifies that the open file descriptor still matches the expected dev and inode.
-func VerifyInodeMatch(f *os.File, expectedDev, expectedIno uint64) (bool, error) {
-	if f == nil {
-		return false, errors.New("nil file")
-	}
-
-	var st unix.Stat_t
-	if err := unix.Fstat(int(f.Fd()), &st); err != nil {
-		return false, fmt.Errorf("fstat: %w", err)
-	}
-
-	return uint64(st.Dev) == expectedDev && uint64(st.Ino) == expectedIno, nil
-}
-
 // VerifyPathInodeMatch verifies that the path (using Lstat, without following symlinks)
 // currently refers to the expected device and inode.
 func VerifyPathInodeMatch(path string, expectedDev, expectedIno uint64) (bool, error) {

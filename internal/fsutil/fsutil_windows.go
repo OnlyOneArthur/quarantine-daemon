@@ -72,21 +72,6 @@ func OpenSafe(path string) (*SafeFile, error) {
 	}, nil
 }
 
-func VerifyInodeMatch(f *os.File, expectedDev, expectedIno uint64) (bool, error) {
-	if f == nil {
-		return false, errors.New("nil file")
-	}
-
-	var fi windows.ByHandleFileInformation
-	if err := windows.GetFileInformationByHandle(windows.Handle(f.Fd()), &fi); err != nil {
-		return false, fmt.Errorf("get file info: %w", err)
-	}
-
-	dev := uint64(fi.VolumeSerialNumber)
-	ino := (uint64(fi.FileIndexHigh) << 32) | uint64(fi.FileIndexLow)
-	return dev == expectedDev && ino == expectedIno, nil
-}
-
 func VerifyPathInodeMatch(path string, expectedDev, expectedIno uint64) (bool, error) {
 	sf, err := OpenSafe(path)
 	if err != nil {

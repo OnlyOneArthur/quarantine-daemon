@@ -39,16 +39,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	if *logLevel != "" {
+		cfg.Service.LogLevel = *logLevel
+	}
+
 	if *tuiMode {
 		if err := tui.Run(tui.SocketDialer(cfg.Service.SocketPath), Version); err != nil {
 			fmt.Fprintf(os.Stderr, "tui failed: %v\n", err)
 			os.Exit(1)
 		}
 		return
-	}
-
-	if *logLevel != "" {
-		cfg.Service.LogLevel = *logLevel
 	}
 
 	log := logger.Init(cfg.Service.LogLevel, os.Stderr)
