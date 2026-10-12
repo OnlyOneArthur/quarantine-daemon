@@ -1,0 +1,30 @@
+# Demo config: the daemon watches ONLY the sandbox directory below, so nothing
+# outside demo/ is ever touched.
+#
+# Relative paths are resolved against this file's directory (see config.Load),
+# so the demo runs from any working directory.
+
+[service]
+log_level = "info"
+poll_interval_ms = 300
+socket_path = "quarantined.sock"
+
+[paths]
+watch = ["watch"]
+ignore_extensions = [".crdownload", ".part", ".tmp"]
+
+[triage_binary]
+enabled = true
+entropy_threshold = 7.3
+max_scan_size_mb = 64
+
+[triage_pkgbuild]
+enabled = true
+block_untrusted_sources = true
+flag_skip_checksums = true
+
+[quarantine]
+vault_dir = "vault"
+threshold_score = 85
+max_vault_size_mb = 1024
+retention_days = 14

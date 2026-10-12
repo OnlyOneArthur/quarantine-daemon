@@ -109,6 +109,9 @@ func DefaultConfig() *Config {
 }
 
 // Load loads configuration from a TOML file. If path is empty, DefaultConfig() is returned.
+//
+// Relative paths in the file (watch entries, vault_dir, socket_path) are resolved against the
+// directory holding the config file, so a checked-in config runs from any working directory.
 func Load(path string) (*Config, error) {
 	cfg := DefaultConfig()
 	if path == "" {
@@ -128,12 +131,24 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("parse config toml: %w", err)
 	}
 
-	// Expand paths
-	for i, p := range cfg.Paths.Watch {
-		cfg.Paths.Watch[i] = ExpandHome(p)
+	baseDir := filepath.Dir(cleanPath)
+	if abs, err := filepath.Abs(baseDir); err == nil {
+		baseDir = abs
 	}
-	cfg.Quarantine.VaultDir = ExpandHome(cfg.Quarantine.VaultDir)
-	cfg.Service.SocketPath = ExpandHome(cfg.Service.SocketPath)
+
+	// Expand paths: "~" first, then anchor anything still relative to the config file.
+	resolve := func(p string) string {
+		p = ExpandHome(p)
+		if p == "" || filepath.IsAbs(p) {
+			return p
+		}
+		return filepath.Clean(filepath.Join(baseDir, p))
+	}
+	for i, p := range cfg.Paths.Watch {
+		cfg.Paths.Watch[i] = resolve(p)
+	}
+	cfg.Quarantine.VaultDir = resolve(cfg.Quarantine.VaultDir)
+	cfg.Service.SocketPath = resolve(cfg.Service.SocketPath)
 
 	return cfg, nil
 }

@@ -6,5 +6,9 @@ bin/
 PLAN*.md
 HANDOFF*.md
 
-# demo sandbox (local-only, not committed)
-demo/
+# demo sandbox output (generated at runtime, not committed)
+demo/watch/
+demo/vault/
+
+# local-only tooling
+scripts/demo/

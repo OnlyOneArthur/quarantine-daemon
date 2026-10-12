@@ -1,0 +1,21 @@
+# demo fixture: benign PKGBUILD for quarantine-daemon demo.
+pkgname=demo-clean
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Synthetic clean fixture for quarantine-daemon demo"
+arch=('x86_64')
+url="https://github.com/example/demo-clean"
+license=('MIT')
+source=("https://github.com/example/demo-clean/archive/refs/tags/v1.0.0.tar.gz")
+sha256sums=("5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03")
+
+build() {
+    cd "$srcdir/demo-clean-1.0.0"
+    make
+}
+
+package() {
+    cd "$srcdir/demo-clean-1.0.0"
+    install -Dm755 demo-clean "$pkgdir/usr/bin/demo-clean"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/demo-clean/LICENSE"
+}

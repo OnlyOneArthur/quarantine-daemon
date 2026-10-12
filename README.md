@@ -2,6 +2,8 @@
 
 User-space host quarantine and static file triage daemon.
 
+![quarantined dashboard](assets/dashboard.png)
+
 `quarantined` watches the directories where risky files land (`~/Downloads`, `/tmp`, AUR helper
 caches), statically analyses new executables and `PKGBUILD` build scripts **without ever
 executing them**, scores them, and atomically isolates high-confidence threats in a quarantine
@@ -9,6 +11,10 @@ vault. A Bubble Tea TUI provides live telemetry, vault browsing, file inspection
 restore.
 
 Written in Go. No root, no kernel module, no LD_PRELOAD.
+
+## Demo
+
+![quarantined walkthrough](assets/demo.gif)
 
 ## Status
 
@@ -116,7 +122,20 @@ go run ./cmd/quarantined -tui -config demo/demo.toml
 ```
 
 `demo/demo.toml` watches only `demo/watch/` and quarantines into `demo/vault/`, so it is safe to
-experiment with.
+experiment with. Relative paths in a config file resolve against that file's directory, so the demo
+works from any working directory.
+
+To see a quarantine happen, drop a fixture into the watched directory while the daemon runs:
+
+```bash
+mkdir -p demo/watch/evil-pkg
+cp demo/fixtures/malicious/PKGBUILD demo/watch/evil-pkg/PKGBUILD
+```
+
+The PKGBUILD engine only runs on a file whose basename is exactly `PKGBUILD` (or ends in
+`.install`), which is why each fixture sits in its own directory. Dropping it under any other name
+sends it to the binary engine instead. `demo/fixtures/clean/PKGBUILD` is the benign counterpart
+and passes.
 
 ## Usage
 
@@ -208,4 +227,4 @@ copy of every quarantined file; restore what you need first with `r` in the TUI.
 
 ## License
 
-No license file yet. All rights reserved by the author; do not redistribute without permission.
+[MIT](LICENSE)
