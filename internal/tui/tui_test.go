@@ -685,8 +685,8 @@ func TestBlinkSequenceAdvances(t *testing.T) {
 	if m.blinkStep != 0 {
 		t.Errorf("blinkStep = %d after a full cycle, want wrap to 0", m.blinkStep)
 	}
-	if got := fmt.Sprint(frames); got != "[0 1 2 3 2 1]" {
-		t.Errorf("blink frames = %s, want [0 1 2 3 2 1] (open to shut and back)", got)
+	if got := fmt.Sprint(frames); got != "[0 4 5 6 7 8 9 10 11 0 1 2 3 2 1]" {
+		t.Errorf("blink frames = %s, want [0 4 5 6 7 8 9 10 11 0 1 2 3 2 1]", got)
 	}
 	if len(delays) != len(blinkDelays)+1 {
 		t.Fatalf("recorded %d delays, want %d", len(delays), len(blinkDelays)+1)

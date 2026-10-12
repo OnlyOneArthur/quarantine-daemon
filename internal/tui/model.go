@@ -215,18 +215,21 @@ var tickCmd = func() tea.Cmd {
 // spinnerTickCmd is a var so tests can stub the spinner timer out, like tickCmd.
 var spinnerTickCmd = func(m spinner.Model) tea.Cmd { return m.Tick }
 
-// blinkSequence maps a blink step to an index into eyeFrames (view.go):
-// open → half → slit → shut, then back out the same way, so the eye eases
-// shut and eases open again instead of snapping.
-var blinkSequence = []int{0, 1, 2, 3, 2, 1}
+// blinkSequence maps an animation step to an index into eyeFrames (view.go):
+// open, look all eight directions (frames 4..11) and back to center, then
+// open → half → slit → shut → slit → half; wraps to the open eye and repeats.
+var blinkSequence = []int{0, 4, 5, 6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 2, 1}
 
-// blinkDelays is how long each step of blinkSequence is held. The long first
-// entry is the rest between blinks; the rest are the shutter itself.
+// blinkDelays is how long each step of blinkSequence is held: a short rest
+// on the open eye, one beat per gaze direction, then the shutter.
 var blinkDelays = []time.Duration{
-	2500 * time.Millisecond,
+	500 * time.Millisecond,
+	220 * time.Millisecond, 220 * time.Millisecond, 220 * time.Millisecond, 220 * time.Millisecond,
+	220 * time.Millisecond, 220 * time.Millisecond, 220 * time.Millisecond, 220 * time.Millisecond,
+	300 * time.Millisecond,
 	90 * time.Millisecond,
 	70 * time.Millisecond,
-	140 * time.Millisecond,
+	300 * time.Millisecond,
 	70 * time.Millisecond,
 	90 * time.Millisecond,
 }

@@ -341,8 +341,8 @@ func TestEyeArtOnlyOnDashboard(t *testing.T) {
 // wide and eyeArtHeight rows tall. The emblem is centered by measuring the
 // block, so a single ragged frame would make the eye twitch sideways mid-blink.
 func TestEyeFramesUniform(t *testing.T) {
-	if len(eyeFrames) != 4 {
-		t.Fatalf("eyeFrames has %d frames, want 4 (open, half, slit, shut)", len(eyeFrames))
+	if len(eyeFrames) != 12 {
+		t.Fatalf("eyeFrames has %d frames, want 12 (open, half, slit, shut, 8 gaze)", len(eyeFrames))
 	}
 	for i, frame := range eyeFrames {
 		if len(frame) != eyeArtHeight {

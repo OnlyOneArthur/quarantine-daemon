@@ -87,7 +87,7 @@ const (
 	eyeArtHeight = 9
 )
 
-var eyeFrames = [][]string{
+var eyeBlinkFrames = [][]string{
 	{
 		"                                        ",
 		"                                        ",
@@ -134,6 +134,68 @@ var eyeFrames = [][]string{
 	},
 }
 
+// The iris of eyeBlinkFrames[0]: rows irisRowLo..irisRowHi, cols irisColLo..
+// irisColHi. The ● pupil sits at (pupilRow, pupilCol) inside it.
+const (
+	irisRowLo, irisRowHi = 3, 5
+	irisColLo, irisColHi = 16, 23
+	pupilRow, pupilCol   = 4, 20
+)
+
+// gazeSpots are the (row, col) shifts of the whole iris+pupil for the eight
+// look directions, clockwise from right: R, DR, D, DL, L, UL, U, UR.
+var gazeSpots = [8][2]int{
+	{0, 3}, {1, 2}, {1, 0}, {1, -3}, {0, -4}, {-1, -3}, {-1, 0}, {-1, 2},
+}
+
+// gazeFrame returns the open eye with the whole iris (and its pupil) shifted by
+// (dr, dc). Iris cells only land on empty eye-white cells inside the iris rows,
+// so the lids stay put and the iris is clipped by them.
+func gazeFrame(open []string, dr, dc int) []string {
+	grid := make([][]rune, len(open))
+	for i, l := range open {
+		grid[i] = []rune(l)
+	}
+	type cell struct {
+		r, c int
+		ch   rune
+	}
+	var iris []cell
+	for r := irisRowLo; r <= irisRowHi; r++ {
+		for c := irisColLo; c <= irisColHi; c++ {
+			if ch := grid[r][c]; ch == '█' || ch == '●' {
+				iris = append(iris, cell{r, c, ch})
+				grid[r][c] = ' '
+			}
+		}
+	}
+	for _, ic := range iris {
+		r, c := ic.r+dr, ic.c+dc
+		if r < irisRowLo || r > irisRowHi || c < 0 || c >= len(grid[r]) {
+			continue
+		}
+		if ic.ch == '●' || grid[r][c] == ' ' {
+			grid[r][c] = ic.ch
+		}
+	}
+	out := make([]string, len(grid))
+	for i, g := range grid {
+		out[i] = string(g)
+	}
+	return out
+}
+
+// eyeFrames = 4 blink frames (0 open, 1 half, 2 slit, 3 shut) followed by 8
+// open-eye gaze frames (4..11, order of gazeSpots). blinkSequence (model.go)
+// indexes into this.
+var eyeFrames = func() [][]string {
+	frames := append([][]string{}, eyeBlinkFrames...)
+	for _, s := range gazeSpots {
+		frames = append(frames, gazeFrame(eyeBlinkFrames[0], s[0], s[1]))
+	}
+	return frames
+}()
+
 // newHelp returns the footer help model with palette-aware styles.
 func newHelp() help.Model {
 	h := help.New()
@@ -168,7 +230,11 @@ func (m *Model) View() string {
 		body = cropLines(body, bodyH)
 	}
 
-	out := strings.Join([]string{m.renderHeader(), m.renderTabs(), "", body, footer}, "\n")
+	tabs := m.renderTabs()
+	if m.width > 0 {
+		tabs = lipgloss.PlaceHorizontal(m.width, lipgloss.Center, tabs)
+	}
+	out := strings.Join([]string{m.renderHeader(), tabs, "", body, footer}, "\n")
 	if m.width <= 0 {
 		return out
 	}
@@ -226,16 +292,17 @@ func (m *Model) renderHeader() string {
 	if version == "" && m.status != nil {
 		version = m.status.Version
 	}
-	left := headerBar.Bold(true).Render("quarantined") + headerBar.Faint(true).Render(" v"+version)
+	title := headerBar.Bold(true).Render("quarantined") + headerBar.Faint(true).Render(" v"+version)
 	right := m.connectionBadge()
 	if m.width <= 0 {
-		return left + "  " + right
+		return title + "  " + right
 	}
-	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 1 {
-		gap = 1
-	}
-	return clampLine(left+headerBar.Render(strings.Repeat(" ", gap))+right, m.width)
+	// Title centered in the bar; shifted left only if the badge would collide.
+	tw, rw := lipgloss.Width(title), lipgloss.Width(right)
+	lead := max(0, min((m.width-tw)/2, m.width-tw-rw-1))
+	gap := max(1, m.width-lead-tw-rw)
+	pad := func(n int) string { return headerBar.Render(strings.Repeat(" ", n)) }
+	return clampLine(pad(lead)+title+pad(gap)+right, m.width)
 }
 
 func (m *Model) connectionBadge() string {
@@ -850,13 +917,6 @@ func pkgFlag(isPKGBUILD bool) string {
 		return "yes"
 	}
 	return "-"
-}
-
-func listOrNone(items []string) string {
-	if len(items) == 0 {
-		return "(none)"
-	}
-	return strings.Join(items, ", ")
 }
 
 // padding helpers: clampLine guarantees the rendered line fits width cells.
