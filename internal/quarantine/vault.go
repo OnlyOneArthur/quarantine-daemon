@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -47,9 +48,11 @@ type ItemMetadata struct {
 
 // Vault is a concurrency-safe quarantine store rooted at a directory.
 type Vault struct {
-	dir      string
-	lockFile *os.File
-	mu       sync.Mutex
+	dir            string
+	lockFile       *os.File
+	mu             sync.Mutex
+	maxVaultSizeMB int64
+	retentionDays  int
 }
 
 // New creates or opens a quarantine vault at vaultDir with 0700 permissions.
@@ -71,6 +74,15 @@ func New(vaultDir string) (*Vault, error) {
 	}
 
 	return &Vault{dir: dir, lockFile: lockFile}, nil
+}
+
+// SetLimits configures the artifact size cap and retention period. Nonpositive
+// values disable the corresponding limit.
+func (v *Vault) SetLimits(maxVaultSizeMB int64, retentionDays int) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.maxVaultSizeMB = maxVaultSizeMB
+	v.retentionDays = retentionDays
 }
 
 // Close releases the vault lock handle.
@@ -141,28 +153,25 @@ func (v *Vault) QuarantineFile(srcPath string, score int, triggers []string, cat
 	}
 
 	err = v.withLock(func() error {
+		if err := v.checkSizeCap(hash, size); err != nil {
+			return err
+		}
 		if err := moveFile(cleanSrc, dev, ino, artifactPath, v.dir); err != nil {
 			return fmt.Errorf("move to vault: %w", err)
 		}
 
 		if err := neutralizePerms(artifactPath); err != nil {
-			_ = os.Remove(artifactPath)
-			return fmt.Errorf("neutralize artifact: %w", err)
+			return fmt.Errorf("neutralize artifact (file preserved at %s): %w", artifactPath, err)
 		}
 
 		if meta.IsPKGBUILD {
 			if err := writePKGBUILDStub(cleanSrc); err != nil {
-				_ = os.Remove(artifactPath)
-				return fmt.Errorf("write PKGBUILD stub: %w", err)
+				return fmt.Errorf("write PKGBUILD stub (file preserved at %s): %w", artifactPath, err)
 			}
 		}
 
 		if err := v.writeMeta(meta); err != nil {
-			_ = os.Remove(artifactPath)
-			if meta.IsPKGBUILD {
-				_ = os.Remove(cleanSrc)
-			}
-			return fmt.Errorf("write meta: %w", err)
+			return fmt.Errorf("write meta (file preserved at %s): %w", artifactPath, err)
 		}
 		return nil
 	})
@@ -171,6 +180,77 @@ func (v *Vault) QuarantineFile(srcPath string, score int, triggers []string, cat
 	}
 
 	return meta, nil
+}
+
+// checkSizeCap counts artifacts (including orphaned ones) before moving the source.
+// Sidecars and the lock file are not quarantined payload bytes.
+func (v *Vault) checkSizeCap(id string, size int64) error {
+	if v.maxVaultSizeMB <= 0 || v.maxVaultSizeMB > math.MaxInt64/(1024*1024) {
+		return nil
+	}
+	maxBytes := v.maxVaultSizeMB * 1024 * 1024
+	entries, err := os.ReadDir(v.dir)
+	if err != nil {
+		return fmt.Errorf("read vault dir: %w", err)
+	}
+	var used int64
+	for _, entry := range entries {
+		name := entry.Name()
+		if len(name) != 64 || name == id {
+			continue // a matching hash replaces its existing artifact
+		}
+		if _, err := hex.DecodeString(name); err != nil {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return fmt.Errorf("stat vault artifact %s: %w", name, err)
+		}
+		if info.Mode().IsRegular() {
+			if info.Size() > maxBytes-used {
+				return fmt.Errorf("vault size cap exceeded (%d MB)", v.maxVaultSizeMB)
+			}
+			used += info.Size()
+		}
+	}
+	if size > maxBytes-used {
+		return fmt.Errorf("vault size cap exceeded (%d MB)", v.maxVaultSizeMB)
+	}
+	return nil
+}
+
+// Sweep purges items older than the configured retention period.
+func (v *Vault) Sweep() error {
+	return v.withLock(func() error {
+		if v.retentionDays <= 0 {
+			return nil
+		}
+		cutoff := time.Now().UTC().AddDate(0, 0, -v.retentionDays)
+		entries, err := os.ReadDir(v.dir)
+		if err != nil {
+			return fmt.Errorf("read vault dir: %w", err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), metaSuffix) {
+				continue
+			}
+			id := strings.TrimSuffix(entry.Name(), metaSuffix)
+			meta, err := v.readMeta(entry.Name())
+			if err != nil {
+				return fmt.Errorf("read vault metadata %s: %w", id, err)
+			}
+			if meta.ID != id || !meta.QuarantinedAt.Before(cutoff) {
+				continue
+			}
+			if err := os.Remove(v.artifactPath(id)); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove expired artifact %s: %w", id, err)
+			}
+			if err := os.Remove(v.metaPath(id)); err != nil {
+				return fmt.Errorf("remove expired metadata %s: %w", id, err)
+			}
+		}
+		return nil
+	})
 }
 
 // List returns metadata for all quarantined items, newest first.
@@ -245,17 +325,24 @@ func (v *Vault) Restore(id string, customDestPath string) error {
 			return fmt.Errorf("create dest dir: %w", err)
 		}
 
-		// Symlink rejection & PKGBUILD stub removal
+		// Reject special files before reading a PKGBUILD stub or creating the destination.
 		if fi, err := os.Lstat(dest); err == nil {
 			if fi.Mode()&os.ModeSymlink != 0 {
 				return fmt.Errorf("%w: destination is a symlink: %s", fsutil.ErrSymlinkNotAllowed, dest)
 			}
-			if meta.IsPKGBUILD {
+			if !fi.Mode().IsRegular() {
+				return fmt.Errorf("%w: destination: %s", fsutil.ErrNotRegularFile, dest)
+			}
+			if meta.IsPKGBUILD && fi.Size() == int64(len(stubBody)) {
 				data, rErr := os.ReadFile(dest)
-				if rErr == nil && strings.Contains(string(data), "Quarantined by quarantined daemon") {
-					_ = os.Remove(dest)
+				if rErr == nil && string(data) == stubBody {
+					if err := os.Remove(dest); err != nil {
+						return fmt.Errorf("remove PKGBUILD stub: %w", err)
+					}
 				}
 			}
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect destination: %w", err)
 		}
 
 		dst, err := fsutil.OpenSafeCreate(dest, meta.OriginalMode)

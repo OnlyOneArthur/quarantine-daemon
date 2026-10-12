@@ -382,6 +382,175 @@ func TestPETriage(t *testing.T) {
 	}
 }
 
+// buildMachO64 emits a minimal 64-bit Mach-O with a single LC_SEGMENT_64 whose
+// maximum protection and initial protection are set independently.
+func buildMachO64(segName string, maxprot, initprot uint32) []byte {
+	buf := new(bytes.Buffer)
+	buf.Write([]byte{0xcf, 0xfa, 0xed, 0xfe})                  // magic MH_MAGIC_64
+	binary.Write(buf, binary.LittleEndian, uint32(0x01000007)) // cputype x86_64
+	binary.Write(buf, binary.LittleEndian, uint32(3))          // cpusubtype
+	binary.Write(buf, binary.LittleEndian, uint32(2))          // filetype MH_EXECUTE
+	binary.Write(buf, binary.LittleEndian, uint32(1))          // ncmds
+	binary.Write(buf, binary.LittleEndian, uint32(72))         // sizeofcmds
+	binary.Write(buf, binary.LittleEndian, uint32(0))          // flags
+	binary.Write(buf, binary.LittleEndian, uint32(0))          // reserved
+
+	binary.Write(buf, binary.LittleEndian, uint32(0x19)) // LC_SEGMENT_64
+	binary.Write(buf, binary.LittleEndian, uint32(72))   // cmdsize
+	name := make([]byte, 16)
+	copy(name, segName)
+	buf.Write(name)
+	binary.Write(buf, binary.LittleEndian, uint64(0)) // vmaddr
+	binary.Write(buf, binary.LittleEndian, uint64(0)) // vmsize
+	binary.Write(buf, binary.LittleEndian, uint64(0)) // fileoff
+	binary.Write(buf, binary.LittleEndian, uint64(0)) // filesize
+	binary.Write(buf, binary.LittleEndian, maxprot)
+	binary.Write(buf, binary.LittleEndian, initprot)
+	binary.Write(buf, binary.LittleEndian, uint32(0)) // nsects
+	binary.Write(buf, binary.LittleEndian, uint32(0)) // flags
+
+	return buf.Bytes()
+}
+
+func TestAnalyzeELFRejectsWrappingSectionTable(t *testing.T) {
+	// shoff = 0xffffffffffffffff: uint64(shnum*shentsize) added to it wraps to a
+	// small value, so the old int()-based guard treated the table as in-bounds.
+	phdrs := []progHeader{{pType: 1, pFlags: 5, pOffset: 64 + 56, pFilesz: 8}}
+	data := buildMinimalELF64(phdrs, ^uint64(0), 10, []byte("payload"))
+	analysis, err := AnalyzeELF(data)
+	if err != nil {
+		t.Fatalf("AnalyzeELF: %v", err)
+	}
+	if !analysis.CorruptedSectionHeaders {
+		t.Fatalf("wrapping section table not flagged corrupted")
+	}
+}
+
+func TestMachOMaxprotAloneIsNotRWX(t *testing.T) {
+	// A segment the kernel merely permits to become RWX (maxprot 7) but that is
+	// currently mapped RX (initprot 5) is how normal __TEXT segments look.
+	data := buildMachO64("__TEXT", 7, 5)
+	analysis, err := AnalyzeMachO(data)
+	if err != nil {
+		t.Fatalf("AnalyzeMachO: %v", err)
+	}
+	if analysis.HasRWXSegments {
+		t.Fatalf("maxprot 7 / initprot 5 reported as RWX segment")
+	}
+
+	cfg := config.DefaultConfig()
+	res, err := TriageBinary(data, "/tmp/benign.macho", cfg)
+	if err != nil {
+		t.Fatalf("TriageBinary: %v", err)
+	}
+	for _, tr := range res.Triggers {
+		if tr.Name == "rwx_segment" {
+			t.Fatalf("benign Mach-O scored rwx_segment: %v", res.Triggers)
+		}
+	}
+}
+
+func TestMachOInitprotRWXIsDetected(t *testing.T) {
+	data := buildMachO64("__TEXT", 7, 7)
+	analysis, err := AnalyzeMachO(data)
+	if err != nil {
+		t.Fatalf("AnalyzeMachO: %v", err)
+	}
+	if !analysis.HasRWXSegments {
+		t.Fatalf("initprot 7 not reported as RWX segment")
+	}
+}
+
+func TestAnalyzeELFRejectsHostileProgramHeaderOffset(t *testing.T) {
+	data := buildMinimalELF64([]progHeader{{pType: 1, pFlags: 5, pFilesz: 16}}, 0, 0, []byte("payload"))
+	// e_phoff high bit set: int(phoff) goes negative without the uint64 guard.
+	for i, b := range []byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80} {
+		data[32+i] = b
+	}
+	analysis, err := AnalyzeELF(data)
+	if err != nil {
+		t.Fatalf("AnalyzeELF: %v", err)
+	}
+	if analysis.TextSectionFound {
+		t.Fatalf("hostile phoff parsed a text section")
+	}
+}
+
+func TestAnalyzeELFRejectsWrappingSegmentBounds(t *testing.T) {
+	phdrs := []progHeader{{
+		pType:   1, // PT_LOAD
+		pFlags:  5, // PF_R | PF_X
+		pOffset: ^uint64(0),
+		pFilesz: 100,
+	}}
+	data := buildMinimalELF64(phdrs, 0, 0, []byte("payload"))
+	analysis, err := AnalyzeELF(data)
+	if err != nil {
+		t.Fatalf("AnalyzeELF: %v", err)
+	}
+	if analysis.TextSectionFound {
+		t.Fatalf("wrapping pOffset/pFilesz parsed a text section")
+	}
+}
+
+func TestPEAndMachOScanRawIOCs(t *testing.T) {
+	peData := make([]byte, 256)
+	copy(peData, "MZ")
+	peData[0x3c] = 0x80
+	copy(peData[0x80:], "PE\x00\x00")
+	copy(peData[0xa0:], "/dev/tcp/1.2.3.4/4444 memfd_create")
+
+	machoData := make([]byte, 256)
+	copy(machoData, []byte{0xcf, 0xfa, 0xed, 0xfe})
+	copy(machoData[64:], "/dev/tcp/1.2.3.4/4444 memfd_create")
+
+	for _, tc := range []struct {
+		name   string
+		data   []byte
+		format Format
+	}{
+		{"PE", peData, FormatPE},
+		{"MachO", machoData, FormatMachO},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res, err := TriageBinary(tc.data, "/tmp/sample", config.DefaultConfig())
+			if err != nil {
+				t.Fatalf("TriageBinary: %v", err)
+			}
+			if res.Format != tc.format {
+				t.Fatalf("format = %s, want %s", res.Format, tc.format)
+			}
+			var shellIOC, ipIOC, capability bool
+			for _, tr := range res.Triggers {
+				if tr.Name == "ioc_payload" && tr.ScoreWeight == 35 {
+					shellIOC = shellIOC || bytes.Contains([]byte(tr.Description), []byte("/dev/tcp/"))
+					ipIOC = ipIOC || bytes.Contains([]byte(tr.Description), []byte("public-c2-ip:1.2.3.4"))
+				}
+				capability = capability || bytes.Contains([]byte(tr.Name), []byte("memfd_create"))
+			}
+			if !shellIOC || !ipIOC || !capability {
+				t.Fatalf("missing shell IOC, C2 IP, or raw capability: %v", res.Triggers)
+			}
+		})
+	}
+}
+
+func TestScriptIOCListIncludesPipedBinSh(t *testing.T) {
+	res, err := TriageBinary([]byte("#!/bin/sh\necho payload|/bin/sh\n"), "/tmp/sample.sh", config.DefaultConfig())
+	if err != nil {
+		t.Fatalf("TriageBinary: %v", err)
+	}
+	if res.Format != FormatScript {
+		t.Fatalf("format = %s, want script", res.Format)
+	}
+	for _, tr := range res.Triggers {
+		if tr.Name == "ioc_payload" && tr.ScoreWeight == 35 && bytes.Contains([]byte(tr.Description), []byte("|/bin/sh")) {
+			return
+		}
+	}
+	t.Fatalf("missing |/bin/sh IOC trigger: %v", res.Triggers)
+}
+
 func TestMachOTriage(t *testing.T) {
 	// Mach-O 64-bit magic (0xfeedfacf)
 	data := make([]byte, 256)

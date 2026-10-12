@@ -60,7 +60,11 @@ func CheckUntrustedSources(analysis *PKGBUILDAnalysis, cfg *config.Config) []Thr
 	for _, src := range analysis.Source {
 		rawURL := src
 		if idx := strings.Index(rawURL, "::"); idx != -1 {
-			rawURL = rawURL[idx+2:]
+			// Only treat "::" as a VCS name separator (pkgname::url); never
+			// strip when it appears after the URL scheme (e.g. IPv6 literals).
+			if scheme := strings.Index(rawURL, "://"); scheme == -1 || idx < scheme {
+				rawURL = rawURL[idx+2:]
+			}
 		}
 		for _, proto := range []string{"git+", "svn+", "hg+", "bzr+"} {
 			if strings.HasPrefix(rawURL, proto) {
@@ -82,12 +86,16 @@ func CheckUntrustedSources(analysis *PKGBUILDAnalysis, cfg *config.Config) []Thr
 			continue
 		}
 
-		// 1. Raw IPv4 address
-		if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+		// 1. Raw IP address (IPv4 or IPv6)
+		if ip := net.ParseIP(host); ip != nil {
+			description := "Source URL uses raw IPv4 address: " + host
+			if ip.To4() == nil {
+				description = "Source URL uses raw IPv6 address: " + host
+			}
 			triggers = append(triggers, ThreatTrigger{
 				Category:    CategoryUntrustedSource,
 				Name:        "untrusted_source_raw_ip",
-				Description: "Source URL uses raw IPv4 address: " + host,
+				Description: description,
 				ScoreWeight: 30,
 				Line:        1,
 				Scope:       ScopeRoot,
@@ -213,9 +221,7 @@ func AnalyzeAST(analysis *PKGBUILDAnalysis, cfg *config.Config) ([]ThreatTrigger
 		case *syntax.BinaryCmd:
 			checkBinaryCmd(n, scope, &triggers)
 		case *syntax.CmdSubst:
-			checkCmdSubst(n, scope, &triggers)
-		case *syntax.Subshell:
-			checkSubshell(n, scope, &triggers)
+			checkCmdSubst(n, analysis.File, scope, &triggers)
 		case *syntax.Stmt:
 			checkStmtRedirs(n, scope, &triggers, addDampener)
 		}
@@ -237,7 +243,7 @@ func isNetworkTool(name string) bool {
 
 func isShell(name string) bool {
 	switch name {
-	case "sh", "bash", "zsh":
+	case "sh", "bash", "zsh", "dash", "ksh", "python", "python3", "perl", "ruby":
 		return true
 	default:
 		return false
@@ -426,8 +432,12 @@ func checkStmtRedirs(stmt *syntax.Stmt, scope string, triggers *[]ThreatTrigger,
 
 func checkPathTarget(w *syntax.Word, rawPath string, line int, scope string, triggers *[]ThreatTrigger, addDampener func(string)) {
 	if HasStagingVariable(w) || HasStagingPrefix(rawPath) {
-		addDampener("packaging_staging_dampener (path within packaging staging variables)")
-		return
+		resolved, within := stagingTarget(rawPath)
+		if within {
+			addDampener("packaging_staging_dampener (path within packaging staging variables)")
+			return
+		}
+		rawPath = resolved
 	}
 
 	isSys, isCrit := matchSystemPath(rawPath)
@@ -458,9 +468,6 @@ func checkPathTarget(w *syntax.Word, rawPath string, line int, scope string, tri
 
 func matchSystemPath(raw string) (matched bool, isCritical bool) {
 	clean := strings.Trim(raw, `'"`)
-	if HasStagingPrefix(clean) {
-		return false, false
-	}
 
 	criticalExactOrPrefix := []string{
 		"/etc/sudoers",
@@ -585,6 +592,11 @@ func collectPipelineStages(node syntax.Node) []*syntax.CallExpr {
 		case *syntax.Stmt:
 			walkStages(cmd.Cmd)
 			return
+		case *syntax.Subshell:
+			for _, s := range cmd.Stmts {
+				walkStages(s)
+			}
+			return
 		case *syntax.CallExpr:
 			stages = append(stages, cmd)
 			return
@@ -594,7 +606,10 @@ func collectPipelineStages(node syntax.Node) []*syntax.CallExpr {
 	return stages
 }
 
-func checkCmdSubst(subst *syntax.CmdSubst, scope string, triggers *[]ThreatTrigger) {
+func checkCmdSubst(subst *syntax.CmdSubst, file *syntax.File, scope string, triggers *[]ThreatTrigger) {
+	if !cmdSubstOutputExecuted(file, subst) {
+		return
+	}
 	line := int(subst.Pos().Line())
 	foundNet := false
 
@@ -624,32 +639,68 @@ func checkCmdSubst(subst *syntax.CmdSubst, scope string, triggers *[]ThreatTrigg
 	}
 }
 
-func checkSubshell(sub *syntax.Subshell, scope string, triggers *[]ThreatTrigger) {
-	line := int(sub.Pos().Line())
-	foundNet := false
-
-	syntax.Walk(sub, func(node syntax.Node) bool {
+func nodeAncestors(file *syntax.File, target syntax.Node) []syntax.Node {
+	var stack []syntax.Node
+	var ancestors []syntax.Node
+	syntax.Walk(file, func(node syntax.Node) bool {
 		if node == nil {
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
 			return false
 		}
-		if call, ok := node.(*syntax.CallExpr); ok {
-			cmd, _ := getCallCommand(call)
-			if isNetworkTool(cmd) {
-				foundNet = true
-				return false
-			}
+		if node == target {
+			ancestors = append(ancestors, stack...)
+			return false
 		}
+		stack = append(stack, node)
 		return true
 	})
+	return ancestors
+}
 
-	if foundNet {
-		*triggers = append(*triggers, ThreatTrigger{
-			Category:    CategoryRemoteExecution,
-			Name:        "subshell_network_download",
-			Description: "Subshell executing network download",
-			ScoreWeight: 45,
-			Line:        line,
-			Scope:       scope,
-		})
+func cmdSubstOutputExecuted(file *syntax.File, target *syntax.CmdSubst) bool {
+	ancestors := nodeAncestors(file, target)
+	var word *syntax.Word
+	var call *syntax.CallExpr
+	var stmt *syntax.Stmt
+	for i := len(ancestors) - 1; i >= 0; i-- {
+		switch n := ancestors[i].(type) {
+		case *syntax.Word:
+			if word == nil {
+				word = n
+			}
+		case *syntax.CallExpr:
+			if call == nil {
+				call = n
+			}
+		case *syntax.Stmt:
+			if stmt == nil {
+				stmt = n
+			}
+		}
 	}
+	if word == nil || call == nil || len(call.Args) == 0 {
+		return false
+	}
+	cmd, _ := getCallCommand(call)
+	if cmd == "eval" || call.Args[0] == word {
+		return true
+	}
+	if stmt == nil {
+		return false
+	}
+	stages := collectPipelineStages(stmt)
+	for i, stage := range stages {
+		if stage != call {
+			continue
+		}
+		for _, later := range stages[i+1:] {
+			name, _ := getCallCommand(later)
+			if isShell(name) {
+				return true
+			}
+		}
+	}
+	return false
 }

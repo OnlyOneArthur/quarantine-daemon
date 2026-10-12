@@ -32,7 +32,7 @@ func TestBinaryFixtures(t *testing.T) {
 		{subdir: "binary", file: "elf_ioc_reverse_shell", expectedFormat: FormatELF, expectedVerdict: VerdictAlert, minScore: 50, maxScore: 50, wantTriggers: []string{"ioc_payload"}},
 		{subdir: "binary", file: "elf_malicious_combined", expectedFormat: FormatELF, expectedVerdict: VerdictQuarantine, minScore: 85, maxScore: 100, wantTriggers: []string{"corrupted_section_headers_evasion", "rwx_segment", "injection_api_memfd_create", "injection_api_ptrace", "ioc_payload"}},
 		{subdir: "binary", file: "pe_rwx", expectedFormat: FormatPE, expectedVerdict: VerdictPass, minScore: 35, maxScore: 35, wantTriggers: []string{"pe_rwx_section"}},
-		{subdir: "binary", file: "pe_malicious_combined", expectedFormat: FormatPE, expectedVerdict: VerdictAlert, minScore: 50, maxScore: 84, wantTriggers: []string{"pe_rwx_section", "pe_high_entropy", "upx_packed"}},
+		{subdir: "binary", file: "pe_malicious_combined", expectedFormat: FormatPE, expectedVerdict: VerdictQuarantine, minScore: 95, maxScore: 95, wantTriggers: []string{"pe_rwx_section", "pe_high_entropy", "upx_packed", "pe_injection_api_VirtualAllocEx"}},
 		{subdir: "entropy", file: "high_entropy.bin", expectedVerdict: VerdictPass, minScore: 25, maxScore: 25, wantTriggers: []string{"high_entropy"}},
 		{subdir: "entropy", file: "low_entropy.bin", expectedVerdict: VerdictPass, minScore: 0, maxScore: 0},
 		{subdir: "scripts", file: "benign_script.sh", expectedVerdict: VerdictPass, minScore: 0, maxScore: 0},

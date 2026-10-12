@@ -144,6 +144,9 @@ type Model struct {
 	blinkStep   int
 	blinkActive bool
 
+	// spinActive indicates the spinner tick loop is running.
+	spinActive bool
+
 	spin spinner.Model
 	help help.Model
 }
@@ -284,12 +287,19 @@ func (m *Model) ensureBlink(cmd tea.Cmd) tea.Cmd {
 	return tea.Batch(cmd, tick)
 }
 
-// withSpinner appends the spinner tick while the spinner is visible, so the
-// animation keeps advancing.
-func (m *Model) withSpinner(cmd tea.Cmd) tea.Cmd {
+// ensureSpinner ensures the spinner tick loop is active while the spinner is
+// visible, or stopped when it is off screen. Arming only on the transition (and
+// re-arming from spinner.TickMsg) keeps one tick chain alive; arming on every
+// Update instead spawns a fresh chain per message and spins the CPU.
+func (m *Model) ensureSpinner(cmd tea.Cmd) tea.Cmd {
 	if !m.spinnerVisible() {
+		m.spinActive = false
 		return cmd
 	}
+	if m.spinActive {
+		return cmd
+	}
+	m.spinActive = true
 	tick := spinnerTickCmd(m.spin)
 	if cmd == nil {
 		return tick
@@ -379,7 +389,7 @@ func addWatchCmd(c Client, path string) tea.Cmd {
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	model, cmd := m.update(msg)
 	if mm, ok := model.(*Model); ok {
-		cmd = mm.withSpinner(cmd)
+		cmd = mm.ensureSpinner(cmd)
 		cmd = mm.ensureBlink(cmd)
 		return mm, cmd
 	}
@@ -429,6 +439,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case spinner.TickMsg:
 		if !m.spinnerVisible() {
+			m.spinActive = false
 			return m, nil
 		}
 		var tick tea.Cmd
@@ -439,11 +450,19 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.handleConnErr(msg.client, msg.err) {
 			return m, nil
 		}
+		if msg.err != nil {
+			m.setNotice(fmt.Sprintf("status failed: %v", msg.err), true)
+			return m, nil
+		}
 		m.status = msg.status
 		return m, nil
 
 	case vaultMsg:
 		if m.handleConnErr(msg.client, msg.err) {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.setNotice(fmt.Sprintf("vault failed: %v", msg.err), true)
 			return m, nil
 		}
 		m.items = msg.items
@@ -453,6 +472,10 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case inspectMsg:
 		if m.handleConnErr(msg.client, msg.err) {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.setNotice(fmt.Sprintf("inspect failed: %v", msg.err), true)
 			return m, nil
 		}
 		m.inspected = msg.item
@@ -590,7 +613,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case key.Matches(msg, keys.Down):
 			m.moveWatchCursor(1)
 			return m, nil
-		case key.Matches(msg, keys.Open) || msg.Type == tea.KeySpace || msg.String() == " ":
+		case key.Matches(msg, keys.Open) || msg.Type == tea.KeySpace:
 			if m.watchCursor >= 0 && m.watchCursor < len(defaultWatchPresets) {
 				preset := defaultWatchPresets[m.watchCursor]
 				if preset.Path == "" {
@@ -606,22 +629,22 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, nil
-	case key.Matches(msg, keys.Up):
+	case m.pane == paneVault && key.Matches(msg, keys.Up):
 		m.moveCursor(-1)
 		return m, nil
-	case key.Matches(msg, keys.Down):
+	case m.pane == paneVault && key.Matches(msg, keys.Down):
 		m.moveCursor(1)
 		return m, nil
-	case key.Matches(msg, keys.Top):
+	case m.pane == paneVault && key.Matches(msg, keys.Top):
 		m.moveCursor(-len(m.items))
 		return m, nil
-	case key.Matches(msg, keys.Bottom):
+	case m.pane == paneVault && key.Matches(msg, keys.Bottom):
 		m.moveCursor(len(m.items))
 		return m, nil
-	case key.Matches(msg, keys.PageUp):
+	case m.pane == paneVault && key.Matches(msg, keys.PageUp):
 		m.moveCursor(-m.listHeight())
 		return m, nil
-	case key.Matches(msg, keys.PageDown):
+	case m.pane == paneVault && key.Matches(msg, keys.PageDown):
 		m.moveCursor(m.listHeight())
 		return m, nil
 	case key.Matches(msg, keys.Open):
@@ -630,12 +653,12 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.pane = paneVault
 		return m, nil
 	case key.Matches(msg, keys.Restore):
-		if m.selected() != nil {
+		if m.actionItem() != nil {
 			m.pending = confirmRestore
 		}
 		return m, nil
 	case key.Matches(msg, keys.Purge):
-		if m.selected() != nil {
+		if m.actionItem() != nil {
 			m.pending = confirmPurge
 		}
 		return m, nil
@@ -646,7 +669,7 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch {
 	case key.Matches(msg, keys.Confirm):
-		item := m.selected()
+		item := m.actionItem()
 		kind := m.pending
 		m.pending = confirmNone
 		if item == nil || m.client == nil {
@@ -691,9 +714,6 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) moveWatchCursor(delta int) {
-	if len(defaultWatchPresets) == 0 {
-		return
-	}
 	m.watchCursor += delta
 	if m.watchCursor < 0 {
 		m.watchCursor = 0
@@ -717,6 +737,18 @@ func (m *Model) openInspector() tea.Cmd {
 		m.pane = paneInspector
 	}
 	return nil
+}
+
+// actionItem is the item visible in the active vault or inspector pane.
+func (m *Model) actionItem() *quarantine.ItemMetadata {
+	switch m.pane {
+	case paneVault:
+		return m.selected()
+	case paneInspector:
+		return m.inspected
+	default:
+		return nil
+	}
 }
 
 func (m *Model) selected() *quarantine.ItemMetadata {

@@ -135,11 +135,10 @@ var eyeBlinkFrames = [][]string{
 }
 
 // The iris of eyeBlinkFrames[0]: rows irisRowLo..irisRowHi, cols irisColLo..
-// irisColHi. The ● pupil sits at (pupilRow, pupilCol) inside it.
+// irisColHi.
 const (
 	irisRowLo, irisRowHi = 3, 5
 	irisColLo, irisColHi = 16, 23
-	pupilRow, pupilCol   = 4, 20
 )
 
 // gazeSpots are the (row, col) shifts of the whole iris+pupil for the eight
@@ -776,7 +775,7 @@ func (m *Model) renderModal() string {
 	boxW := m.boxWidth(modalWidth)
 	valueW := boxW - 4 - labelWidth
 	lines := []string{lipgloss.NewStyle().Bold(true).Foreground(border).Render(title), ""}
-	if item := m.selected(); item != nil {
+	if item := m.actionItem(); item != nil {
 		lines = append(lines,
 			fieldRow("id", shortID(item.ID), valueW),
 			fieldRow("path", middleTruncate(item.OriginalPath, valueW), valueW),

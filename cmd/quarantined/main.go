@@ -75,6 +75,10 @@ func run(cfg *config.Config, log *slog.Logger) error {
 		return fmt.Errorf("open vault: %w", err)
 	}
 	defer func() { _ = vault.Close() }()
+	vault.SetLimits(cfg.Quarantine.MaxVaultSizeMB, cfg.Quarantine.RetentionDays)
+	if err := vault.Sweep(); err != nil {
+		return fmt.Errorf("sweep vault: %w", err)
+	}
 
 	w, err := watcher.New(watcher.Config{
 		Roots:            cfg.Paths.Watch,
@@ -97,12 +101,18 @@ func run(cfg *config.Config, log *slog.Logger) error {
 
 	log.Info("daemon running", "socket", cfg.Service.SocketPath)
 
+	sweepTicker := time.NewTicker(time.Hour)
+	defer sweepTicker.Stop()
 	var loopErr error
 loop:
 	for {
 		select {
 		case <-ctx.Done():
 			break loop
+		case <-sweepTicker.C:
+			if err := vault.Sweep(); err != nil {
+				log.Error("vault retention sweep failed", "error", err)
+			}
 		case err := <-srvErr:
 			if err != nil {
 				loopErr = fmt.Errorf("ipc server: %w", err)

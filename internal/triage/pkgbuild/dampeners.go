@@ -1,6 +1,7 @@
 package pkgbuild
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
@@ -46,6 +47,22 @@ func checkPartStaging(part syntax.WordPart) bool {
 func HasStagingPrefix(path string) bool {
 	return strings.Contains(path, "$pkgdir") || strings.Contains(path, "${pkgdir}") ||
 		strings.Contains(path, "$srcdir") || strings.Contains(path, "${srcdir}")
+}
+
+// stagingTarget resolves literal traversal after a leading staging variable.
+// An escaped target is returned as an absolute path for system-path checks.
+func stagingTarget(path string) (target string, within bool) {
+	for _, prefix := range []string{"${pkgdir}", "$pkgdir", "${srcdir}", "$srcdir"} {
+		if path != prefix && !strings.HasPrefix(path, prefix+"/") {
+			continue
+		}
+		resolved := filepath.Clean("/staging" + strings.TrimPrefix(path, prefix))
+		if resolved == "/staging" || strings.HasPrefix(resolved, "/staging/") {
+			return resolved, true
+		}
+		return resolved, false
+	}
+	return path, false
 }
 
 // EvaluateIntegrity applies VCS dampening or flags missing/SKIP checksums on static sources.

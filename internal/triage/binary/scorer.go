@@ -2,7 +2,7 @@ package binary
 
 import (
 	"bytes"
-	"net"
+	"strings"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/entropy"
@@ -71,7 +71,7 @@ func calculateCappedScore(triggers []ThreatTrigger, isGo, isRust bool, quarantin
 		}
 	}
 
-	// Category caps: prevent any single trigger category from inflating beyond single-category cap (max 60)
+	// Cap entropy, capabilities, and IOC contributions; structure remains uncapped.
 	if scoreEntropy > 40 {
 		scoreEntropy = 40
 	}
@@ -284,6 +284,15 @@ func ScorePE(analysis *PEAnalysis, cfg *config.Config, path string) *TriageResul
 		})
 	}
 
+	for _, ioc := range analysis.SuspiciousIOCs {
+		res.Triggers = append(res.Triggers, ThreatTrigger{
+			Category:    CategoryIOC,
+			Name:        "ioc_payload",
+			Description: "Suspicious payload or network IOC pattern detected: " + ioc,
+			ScoreWeight: 35,
+		})
+	}
+
 	score, verdict, dampeners := calculateCappedScore(res.Triggers, false, false, quarantineThreshold)
 	res.Score = score
 	res.Verdict = verdict
@@ -346,6 +355,24 @@ func ScoreMachO(analysis *MachOAnalysis, cfg *config.Config, path string) *Triag
 			Name:        "upx_packed",
 			Description: "Binary packed with UPX packer",
 			ScoreWeight: 30,
+		})
+	}
+
+	for _, capName := range analysis.SuspiciousCapabilities {
+		res.Triggers = append(res.Triggers, ThreatTrigger{
+			Category:    CategoryCapabilities,
+			Name:        "injection_api_" + capName,
+			Description: "High-risk process injection/memory execution API detected: " + capName,
+			ScoreWeight: 20,
+		})
+	}
+
+	for _, ioc := range analysis.SuspiciousIOCs {
+		res.Triggers = append(res.Triggers, ThreatTrigger{
+			Category:    CategoryIOC,
+			Name:        "ioc_payload",
+			Description: "Suspicious payload or network IOC pattern detected: " + ioc,
+			ScoreWeight: 35,
 		})
 	}
 
@@ -439,7 +466,6 @@ func TriageBinary(data []byte, path string, cfg *config.Config) (*TriageResult, 
 		})
 	}
 
-	capStrings := []string{"memfd_create", "process_vm_writev", "VirtualAllocEx", "ptrace"}
 	for _, c := range capStrings {
 		if bytes.Contains(data, []byte(c)) {
 			res.Triggers = append(res.Triggers, ThreatTrigger{
@@ -451,40 +477,15 @@ func TriageBinary(data []byte, path string, cfg *config.Config) (*TriageResult, 
 		}
 	}
 
-	iocPatterns := []string{"/dev/tcp/", "sh -i", "bash -i", "| sh", "| bash"}
-	for _, p := range iocPatterns {
-		if bytes.Contains(data, []byte(p)) {
-			res.Triggers = append(res.Triggers, ThreatTrigger{
-				Category:    CategoryIOC,
-				Name:        "ioc_payload",
-				Description: "Suspicious payload or network pattern detected: " + p,
-				ScoreWeight: 35,
-			})
-		}
-	}
-
-	matches := ipv4Regex.FindAll(data, 100)
-	for _, m := range matches {
-		ipStr := string(m)
-		ip := net.ParseIP(ipStr)
-		if ip == nil || ip.To4() == nil {
-			continue
-		}
-		if ip.IsUnspecified() || ip.IsLoopback() || ip.IsPrivate() ||
-			ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
-			continue
-		}
-		if ip.To4()[0] == 0 || ipStr == "255.255.255.255" {
-			continue
-		}
-		switch ipStr {
-		case "8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1", "9.9.9.9", "149.112.112.112", "208.67.222.222", "208.67.220.220":
-			continue
+	for _, ioc := range scanRawIOCs(data) {
+		description := "Suspicious payload or network pattern detected: " + ioc
+		if strings.HasPrefix(ioc, "public-c2-ip:") {
+			description = "Public C2 IP detected: " + strings.TrimPrefix(ioc, "public-c2-ip:")
 		}
 		res.Triggers = append(res.Triggers, ThreatTrigger{
 			Category:    CategoryIOC,
 			Name:        "ioc_payload",
-			Description: "Public C2 IP detected: " + ipStr,
+			Description: description,
 			ScoreWeight: 35,
 		})
 	}

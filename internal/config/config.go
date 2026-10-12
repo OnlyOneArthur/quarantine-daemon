@@ -121,9 +121,6 @@ func Load(path string) (*Config, error) {
 	cleanPath := filepath.Clean(path)
 	data, err := os.ReadFile(cleanPath)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return cfg, nil
-		}
 		return nil, fmt.Errorf("read config file: %w", err)
 	}
 
@@ -138,8 +135,11 @@ func Load(path string) (*Config, error) {
 
 	// Expand paths: "~" first, then anchor anything still relative to the config file.
 	resolve := func(p string) string {
+		if p == "" {
+			return ""
+		}
 		p = ExpandHome(p)
-		if p == "" || filepath.IsAbs(p) {
+		if filepath.IsAbs(p) {
 			return p
 		}
 		return filepath.Clean(filepath.Join(baseDir, p))
@@ -149,6 +149,9 @@ func Load(path string) (*Config, error) {
 	}
 	cfg.Quarantine.VaultDir = resolve(cfg.Quarantine.VaultDir)
 	cfg.Service.SocketPath = resolve(cfg.Service.SocketPath)
+	if cfg.Quarantine.VaultDir == "" || cfg.Service.SocketPath == "" {
+		return nil, fmt.Errorf("vault_dir and socket_path must not be empty")
+	}
 
 	return cfg, nil
 }

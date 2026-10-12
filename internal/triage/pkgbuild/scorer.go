@@ -41,12 +41,13 @@ func ScorePKGBUILD(analysis *PKGBUILDAnalysis, cfg *config.Config, path string) 
 	if score > 100 {
 		score = 100
 	}
-	if score < 0 {
-		score = 0
-	}
 
+	threshold := 85
+	if cfg != nil && cfg.Quarantine.ThresholdScore > 0 {
+		threshold = cfg.Quarantine.ThresholdScore
+	}
 	verdict := VerdictPass
-	if score >= 85 {
+	if score >= threshold {
 		verdict = VerdictQuarantine
 	} else if score >= 50 {
 		verdict = VerdictAlert

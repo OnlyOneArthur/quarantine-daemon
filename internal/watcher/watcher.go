@@ -15,19 +15,9 @@ import (
 	"github.com/fsnotify/fsnotify"
 )
 
-// EventType represents the kind of filesystem event.
-type EventType string
-
-const (
-	EventCreate EventType = "CREATE"
-	EventModify EventType = "MODIFY"
-	EventMove   EventType = "MOVE"
-)
-
 // Event represents a file notification dispatched by the watcher.
 type Event struct {
 	Path      string
-	Type      EventType
 	Immediate bool
 }
 
@@ -126,10 +116,6 @@ func (w *Watcher) Errors() <-chan error {
 	return w.errors
 }
 
-func (w *Watcher) WatchedDirs() []string {
-	return w.WatchedDirectories()
-}
-
 func (w *Watcher) WatchedDirectories() []string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -142,6 +128,8 @@ func (w *Watcher) WatchedDirectories() []string {
 }
 
 func (w *Watcher) Close() error {
+	// Wake any sender waiting on a full channel before taking the mutex.
+	w.cancel()
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
@@ -150,12 +138,13 @@ func (w *Watcher) Close() error {
 	w.closed = true
 
 	for _, item := range w.timers {
-		item.timer.Stop()
+		if item.timer.Stop() {
+			w.wg.Done()
+		}
 	}
 	w.timers = make(map[string]*debounceItem)
 	w.mu.Unlock()
 
-	w.cancel()
 	err := w.fsWatcher.Close()
 	w.wg.Wait()
 
@@ -293,6 +282,9 @@ func (w *Watcher) handleFsEvent(ev fsnotify.Event) {
 	cleanPath := filepath.Clean(ev.Name)
 
 	if ev.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+		// Remove/Rename identify the old path; cancel pending work instead of
+		// emitting an event for a file that no longer exists there.
+		w.cancelDebounce(cleanPath)
 		w.mu.Lock()
 		_, isWatched := w.watchedDirs[cleanPath]
 		w.mu.Unlock()
@@ -312,8 +304,8 @@ func (w *Watcher) handleFsEvent(ev fsnotify.Event) {
 		}
 	}
 
-	if ev.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename) != 0 {
-		w.dispatchFileEvent(cleanPath, ev.Op)
+	if ev.Op&(fsnotify.Create|fsnotify.Write) != 0 {
+		w.dispatchFileEvent(cleanPath)
 	}
 }
 
@@ -323,33 +315,23 @@ func (w *Watcher) isIgnored(path string) bool {
 	return ignored
 }
 
-func (w *Watcher) isImmediate(path string, op fsnotify.Op) bool {
+func (w *Watcher) isImmediate(path string) bool {
 	base := filepath.Base(path)
-	if base == "PKGBUILD" || strings.HasSuffix(base, ".install") || strings.HasSuffix(base, ".pkgbuild") {
-		return true
-	}
-	if op&fsnotify.Rename != 0 {
+	if base == "PKGBUILD" || strings.HasSuffix(base, ".install") {
 		return true
 	}
 	return false
 }
 
-func (w *Watcher) dispatchFileEvent(path string, op fsnotify.Op) {
+func (w *Watcher) dispatchFileEvent(path string) {
 	if w.isIgnored(path) {
 		return
 	}
 
-	if w.isImmediate(path, op) {
+	if w.isImmediate(path) {
 		w.cancelDebounce(path)
-		evType := EventCreate
-		if op&fsnotify.Rename != 0 {
-			evType = EventMove
-		} else if op&fsnotify.Write != 0 {
-			evType = EventModify
-		}
 		w.emitEvent(Event{
 			Path:      path,
-			Type:      evType,
 			Immediate: true,
 		})
 		return
@@ -362,19 +344,18 @@ func (w *Watcher) dispatchFileEvent(path string, op fsnotify.Op) {
 	}
 
 	if item, exists := w.timers[path]; exists {
-		item.timer.Stop()
+		if item.timer.Stop() {
+			w.wg.Done()
+		}
 	}
 
 	w.generation++
 	gen := w.generation
 
-	evType := EventModify
-	if op&fsnotify.Create != 0 {
-		evType = EventCreate
-	}
-
+	w.wg.Add(1)
 	t := time.AfterFunc(w.debounceDelay, func() {
-		w.onDebounceTimerFired(path, evType, gen)
+		defer w.wg.Done()
+		w.onDebounceTimerFired(path, gen)
 	})
 
 	w.timers[path] = &debounceItem{
@@ -388,12 +369,14 @@ func (w *Watcher) cancelDebounce(path string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if item, exists := w.timers[path]; exists {
-		item.timer.Stop()
+		if item.timer.Stop() {
+			w.wg.Done()
+		}
 		delete(w.timers, path)
 	}
 }
 
-func (w *Watcher) onDebounceTimerFired(path string, evType EventType, gen uint64) {
+func (w *Watcher) onDebounceTimerFired(path string, gen uint64) {
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
@@ -418,7 +401,6 @@ func (w *Watcher) onDebounceTimerFired(path string, evType EventType, gen uint64
 
 	w.emitEvent(Event{
 		Path:      path,
-		Type:      evType,
 		Immediate: false,
 	})
 }
@@ -460,12 +442,11 @@ func (w *Watcher) waitForFileReady(path string) bool {
 
 func (w *Watcher) emitEvent(ev Event) {
 	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.closed {
-		w.mu.Unlock()
 		return
 	}
-	w.mu.Unlock()
-
+	// Keep the channel open through the send; Close cancels before taking mu.
 	select {
 	case <-w.ctx.Done():
 	case w.events <- ev:
@@ -473,6 +454,11 @@ func (w *Watcher) emitEvent(ev Event) {
 }
 
 func (w *Watcher) sendError(err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.closed {
+		return
+	}
 	select {
 	case <-w.ctx.Done():
 	case w.errors <- err:
@@ -515,8 +501,11 @@ func (w *Watcher) ReconcileWalk() error {
 			if err != nil {
 				return nil
 			}
+			if d.IsDir() && path != cleanRoot && strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
 			if !d.IsDir() {
-				w.dispatchFileEvent(filepath.Clean(path), fsnotify.Create)
+				w.dispatchFileEvent(filepath.Clean(path))
 			}
 			return nil
 		})

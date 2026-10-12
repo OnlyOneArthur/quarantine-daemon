@@ -17,10 +17,7 @@ func ParsePKGBUILD(data []byte, path string) (*PKGBUILDAnalysis, error) {
 	}
 
 	analysis := &PKGBUILDAnalysis{
-		Path:      path,
-		File:      file,
-		Scope:     ScopeRoot,
-		Variables: make(map[string][]string),
+		File: file,
 	}
 
 	extractTopLevelVariables(analysis, file)
@@ -38,10 +35,7 @@ func ParseInstallScript(data []byte, path string) (*PKGBUILDAnalysis, error) {
 	}
 
 	analysis := &PKGBUILDAnalysis{
-		Path:            path,
 		File:            file,
-		Scope:           ScopeInstallScriptlet,
-		Variables:       make(map[string][]string),
 		IsInstallScript: true,
 	}
 
@@ -122,12 +116,6 @@ func processAssign(analysis *PKGBUILDAnalysis, assign *syntax.Assign) {
 }
 
 func assignVariable(analysis *PKGBUILDAnalysis, name string, vals []string, isAppend bool) {
-	if isAppend {
-		analysis.Variables[name] = append(analysis.Variables[name], vals...)
-	} else {
-		analysis.Variables[name] = vals
-	}
-
 	firstVal := ""
 	if len(vals) > 0 {
 		firstVal = vals[0]
@@ -143,22 +131,34 @@ func assignVariable(analysis *PKGBUILDAnalysis, name string, vals []string, isAp
 		if len(analysis.Pkgnames) > 0 {
 			analysis.Pkgname = analysis.Pkgnames[0]
 		}
-	case name == "pkgver":
-		if !isAppend || analysis.Pkgver == "" {
-			analysis.Pkgver = firstVal
-		}
 	case name == "install":
 		if !isAppend || analysis.Install == "" {
 			analysis.Install = firstVal
 		}
 	case name == "source" || strings.HasPrefix(name, "source_"):
-		analysis.Source = append(analysis.Source, vals...)
+		if isAppend {
+			analysis.Source = append(analysis.Source, vals...)
+		} else {
+			analysis.Source = vals
+		}
 	case name == "sha256sums" || strings.HasPrefix(name, "sha256sums_"):
-		analysis.Sha256sums = append(analysis.Sha256sums, vals...)
+		if isAppend {
+			analysis.Sha256sums = append(analysis.Sha256sums, vals...)
+		} else {
+			analysis.Sha256sums = vals
+		}
 	case name == "sha512sums" || strings.HasPrefix(name, "sha512sums_"):
-		analysis.Sha512sums = append(analysis.Sha512sums, vals...)
+		if isAppend {
+			analysis.Sha512sums = append(analysis.Sha512sums, vals...)
+		} else {
+			analysis.Sha512sums = vals
+		}
 	case name == "md5sums" || strings.HasPrefix(name, "md5sums_"):
-		analysis.Md5sums = append(analysis.Md5sums, vals...)
+		if isAppend {
+			analysis.Md5sums = append(analysis.Md5sums, vals...)
+		} else {
+			analysis.Md5sums = vals
+		}
 	}
 }
 
@@ -220,11 +220,15 @@ func WalkScope(file *syntax.File, isInstallScript bool, visitor func(node syntax
 			currentScope = ScopeFunction
 		}
 
+		if !visitor(node, currentScope) {
+			return false
+		}
+
 		stack = append(stack, node)
 		if _, ok := node.(*syntax.FuncDecl); ok {
 			funcDepth++
 		}
 
-		return visitor(node, currentScope)
+		return true
 	})
 }

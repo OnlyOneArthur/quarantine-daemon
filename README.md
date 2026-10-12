@@ -66,8 +66,9 @@ Quarantine vault  ->  IPC server (Unix socket, SO_PEERCRED)  ->  TUI client
   original mode, uid/gid and triggering signals. `PKGBUILD` artifacts are additionally replaced
   in place by a stub that exits non-zero, so `makepkg` cannot proceed.
 - **IPC** (`internal/ipc`) — newline-delimited JSON RPC over
-  `$XDG_RUNTIME_DIR/quarantined.sock`, mode `0600`, peer authenticated with `SO_PEERCRED` so only
-  the owning UID can connect. Methods: `Ping`, `GetStatus`, `ListVault`, `InspectItem`,
+  `$XDG_RUNTIME_DIR/quarantined.sock`, mode `0600`, peer authenticated with Linux `SO_PEERCRED`
+  or macOS `LOCAL_PEERCRED` so only the owning UID can connect. Windows peer authentication is not
+  supported; the daemon rejects IPC connections there. Methods: `Ping`, `GetStatus`, `ListVault`, `InspectItem`,
   `RestoreItem`, `PurgeItem`, `AddWatchPath`.
 - **TUI** (`internal/tui`) — auto-reconnecting Bubble Tea client with four panes: Dashboard
   (live feed, counters, hunter-eye emblem), Vault, Inspector and Watch Targets.

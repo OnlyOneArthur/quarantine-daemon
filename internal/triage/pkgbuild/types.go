@@ -50,18 +50,14 @@ type TriageResult struct {
 
 // PKGBUILDAnalysis holds the parsed AST and extracted metadata from a PKGBUILD or install scriptlet.
 type PKGBUILDAnalysis struct {
-	Path            string
 	File            *syntax.File
-	Scope           string
 	Pkgname         string
 	Pkgnames        []string
-	Pkgver          string
 	Source          []string
 	Sha256sums      []string
 	Sha512sums      []string
 	Md5sums         []string
 	Install         string
-	Variables       map[string][]string
 	IsVCSPackage    bool
 	IsInstallScript bool
 	InstallAnalysis *PKGBUILDAnalysis

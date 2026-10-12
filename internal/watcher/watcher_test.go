@@ -2,6 +2,8 @@ package watcher
 
 import (
 	"os"
+
+	"github.com/fsnotify/fsnotify"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,7 +32,7 @@ func TestRecursiveWatcherSubdirRegistration(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	// Verify subdirectory is in watched dirs
-	watched := w.WatchedDirs()
+	watched := w.WatchedDirectories()
 	found := false
 	for _, d := range watched {
 		if d == subDir {
@@ -151,6 +153,48 @@ loop:
 
 	if !receivedValid {
 		t.Fatalf("expected to receive event for valid file")
+	}
+}
+
+func TestRemovedFileCancelsPendingDebounce(t *testing.T) {
+	for _, op := range []fsnotify.Op{fsnotify.Remove, fsnotify.Rename} {
+		t.Run(op.String(), func(t *testing.T) {
+			w, err := New(Config{Roots: []string{t.TempDir()}, DebounceDelay: time.Hour})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer w.Close()
+			path := filepath.Join(t.TempDir(), "moved.bin")
+			w.dispatchFileEvent(path)
+			w.handleFsEvent(fsnotify.Event{Name: path, Op: op})
+			w.mu.Lock()
+			_, pending := w.timers[path]
+			w.mu.Unlock()
+			if pending {
+				t.Fatalf("debounce timer left for %s after %s", path, op)
+			}
+			select {
+			case ev := <-w.Events():
+				t.Fatalf("stale event for moved-away path: %+v", ev)
+			default:
+			}
+		})
+	}
+}
+
+func TestImmediateFileKindsMatchPipeline(t *testing.T) {
+	w := &Watcher{}
+	for _, tc := range []struct {
+		path string
+		want bool
+	}{
+		{"x.pkgbuild", false},
+		{"PKGBUILD", true},
+		{"x.install", true},
+	} {
+		if got := w.isImmediate(tc.path); got != tc.want {
+			t.Errorf("isImmediate(%q) = %v, want %v", tc.path, got, tc.want)
+		}
 	}
 }
 
@@ -317,7 +361,7 @@ func TestAddRoot(t *testing.T) {
 		t.Fatalf("expected AddRoot on individual file to succeed, got: %v", err)
 	}
 
-	watchedDirs := w.WatchedDirs()
+	watchedDirs := w.WatchedDirectories()
 	found := false
 	for _, d := range watchedDirs {
 		if d == filePath {
@@ -326,6 +370,6 @@ func TestAddRoot(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("expected file %s to appear in WatchedDirs: %v", filePath, watchedDirs)
+		t.Fatalf("expected file %s to appear in WatchedDirectories: %v", filePath, watchedDirs)
 	}
 }

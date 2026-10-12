@@ -19,6 +19,44 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_MissingFileErrors(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "nope.toml")
+
+	if _, err := Load(cfgPath); err == nil {
+		t.Fatal("expected error for missing config file, got nil")
+	}
+
+	// An empty path still means "use defaults" — that is the documented
+	// no-config invocation, not a missing file.
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load empty path failed: %v", err)
+	}
+	if cfg.Quarantine.ThresholdScore != 85 {
+		t.Errorf("expected default threshold 85, got %d", cfg.Quarantine.ThresholdScore)
+	}
+}
+
+func TestLoadConfig_EmptyPathsRejected(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfgPath := filepath.Join(tmpDir, "config.toml")
+	tomlData := []byte(`
+[service]
+socket_path = ""
+
+[quarantine]
+vault_dir = ""
+`)
+	if err := os.WriteFile(cfgPath, tomlData, 0600); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	if _, err := Load(cfgPath); err == nil {
+		t.Fatal("expected error for empty vault_dir/socket_path, got nil")
+	}
+}
+
 func TestLoadConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfgPath := filepath.Join(tmpDir, "config.toml")

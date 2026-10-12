@@ -17,18 +17,17 @@ var (
 	ErrNotELF       = errors.New("not an ELF binary")
 	ErrELFTruncated = errors.New("ELF binary truncated")
 
-	ipv4Regex = regexp.MustCompile(`\b(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b`)
+	ipv4Regex   = regexp.MustCompile(`\b(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b`)
+	iocPatterns = []string{"/dev/tcp/", "sh -i", "bash -i", "| sh", "| bash", "|/bin/sh", "|/bin/bash"}
+	capStrings  = []string{"memfd_create", "process_vm_writev", "VirtualAllocEx", "ptrace"}
 )
 
 // ELFAnalysis holds all findings from static analysis of an ELF binary.
 type ELFAnalysis struct {
-	IsELF                   bool
 	CorruptedSectionHeaders bool
 	HasValidPTLoad          bool
-	PTLoadCount             int
 	HasExecutableStack      bool
 	HasRWXSegments          bool
-	RWXSegmentCount         int
 	HasUPX                  bool
 	TextEntropy             float64
 	TextSectionFound        bool
@@ -45,28 +44,18 @@ func AnalyzeELF(data []byte) (*ELFAnalysis, error) {
 		return nil, ErrNotELF
 	}
 
-	analysis := &ELFAnalysis{
-		IsELF: true,
-	}
+	analysis := &ELFAnalysis{}
 
 	// 1. Try standard parsing via debug/elf
 	f, err := elf.NewFile(bytes.NewReader(data))
 	if err == nil {
 		defer f.Close()
-		analyzeWithDebugELF(f, data, analysis)
-	} else {
-		// Section headers may be corrupted or missing.
-		// Perform raw header inspection.
-		if rawErr := parseRawELFHeaders(data, analysis); rawErr != nil {
-			return nil, rawErr
-		}
+		analyzeWithDebugELF(f, analysis)
 	}
 
 	// 2. Fallback check for raw headers if debug/elf did not find PT_LOAD
 	if !analysis.HasValidPTLoad {
-		if rawErr := parseRawELFHeaders(data, analysis); rawErr != nil && !analysis.IsELF {
-			return nil, rawErr
-		}
+		_ = parseRawELFHeaders(data, analysis)
 	}
 
 	// 3. Fallback entropy calculation if .text section was not found
@@ -80,18 +69,16 @@ func AnalyzeELF(data []byte) (*ELFAnalysis, error) {
 	return analysis, nil
 }
 
-func analyzeWithDebugELF(f *elf.File, data []byte, analysis *ELFAnalysis) {
+func analyzeWithDebugELF(f *elf.File, analysis *ELFAnalysis) {
 	for _, prog := range f.Progs {
 		switch prog.Type {
 		case elf.PT_LOAD:
-			analysis.PTLoadCount++
 			analysis.HasValidPTLoad = true
 
 			// Check for RWX segment
 			if (prog.Flags&(elf.PF_R|elf.PF_W|elf.PF_X)) == (elf.PF_R|elf.PF_W|elf.PF_X) ||
 				(prog.Flags&(elf.PF_W|elf.PF_X)) == (elf.PF_W|elf.PF_X) {
 				analysis.HasRWXSegments = true
-				analysis.RWXSegmentCount++
 			}
 
 		case elf.PT_GNU_STACK:
@@ -222,21 +209,22 @@ func parseRawELFHeaders(data []byte, analysis *ELFAnalysis) error {
 
 		if phnum > 0 && phoff > 0 && phentsize >= 32 {
 			for i := 0; i < phnum; i++ {
-				off := int(phoff) + i*phentsize
-				if off+32 > len(data) {
+				// Offsets stay in uint64: phoff comes from the file and can overflow int.
+				poff := phoff + uint64(i)*uint64(phentsize)
+				if poff < phoff || poff+32 < poff || poff+32 > uint64(len(data)) {
 					break
 				}
+				off := int(poff)
 				pType := byteOrder.Uint32(data[off : off+4])
 				pOffset := uint64(byteOrder.Uint32(data[off+4 : off+8]))
 				pFilesz := uint64(byteOrder.Uint32(data[off+16 : off+20]))
 				pFlags := byteOrder.Uint32(data[off+24 : off+28])
 
 				if pType == 1 { // PT_LOAD
-					analysis.PTLoadCount++
 					analysis.HasValidPTLoad = true
 
 					if pFlags&1 != 0 && !analysis.TextSectionFound { // PF_X
-						if pOffset+pFilesz <= uint64(len(data)) && pFilesz > 0 {
+						if pFilesz > 0 && pOffset <= uint64(len(data)) && pFilesz <= uint64(len(data))-pOffset {
 							analysis.TextEntropy = entropy.Calculate(data[pOffset : pOffset+pFilesz])
 							analysis.TextSectionFound = true
 						}
@@ -244,7 +232,6 @@ func parseRawELFHeaders(data []byte, analysis *ELFAnalysis) error {
 
 					if (pFlags & 3) == 3 { // PF_X | PF_W
 						analysis.HasRWXSegments = true
-						analysis.RWXSegmentCount++
 					}
 				} else if pType == 0x6474e551 { // PT_GNU_STACK
 					if pFlags&1 != 0 { // PF_X
@@ -256,7 +243,7 @@ func parseRawELFHeaders(data []byte, analysis *ELFAnalysis) error {
 
 		// Check if section header table is corrupted/missing despite valid PT_LOAD
 		if analysis.HasValidPTLoad {
-			if shoff == 0 || int(shoff) >= len(data) || shnum == 0 || int(shoff+uint64(shnum*shentsize)) > len(data) {
+			if sectionTableInvalid(shoff, shnum, shentsize, len(data)) {
 				analysis.CorruptedSectionHeaders = true
 			}
 		}
@@ -274,21 +261,22 @@ func parseRawELFHeaders(data []byte, analysis *ELFAnalysis) error {
 
 		if phnum > 0 && phoff > 0 && phentsize >= 56 {
 			for i := 0; i < phnum; i++ {
-				off := int(phoff) + i*phentsize
-				if off+56 > len(data) {
+				// Offsets stay in uint64: phoff comes from the file and can overflow int.
+				poff := phoff + uint64(i)*uint64(phentsize)
+				if poff < phoff || poff+56 < poff || poff+56 > uint64(len(data)) {
 					break
 				}
+				off := int(poff)
 				pType := byteOrder.Uint32(data[off : off+4])
 				pFlags := byteOrder.Uint32(data[off+4 : off+8])
 				pOffset := byteOrder.Uint64(data[off+8 : off+16])
 				pFilesz := byteOrder.Uint64(data[off+32 : off+40])
 
 				if pType == 1 { // PT_LOAD
-					analysis.PTLoadCount++
 					analysis.HasValidPTLoad = true
 
 					if pFlags&1 != 0 && !analysis.TextSectionFound { // PF_X
-						if pOffset+pFilesz <= uint64(len(data)) && pFilesz > 0 {
+						if pFilesz > 0 && pOffset <= uint64(len(data)) && pFilesz <= uint64(len(data))-pOffset {
 							analysis.TextEntropy = entropy.Calculate(data[pOffset : pOffset+pFilesz])
 							analysis.TextSectionFound = true
 						}
@@ -296,7 +284,6 @@ func parseRawELFHeaders(data []byte, analysis *ELFAnalysis) error {
 
 					if (pFlags & 3) == 3 { // PF_X | PF_W
 						analysis.HasRWXSegments = true
-						analysis.RWXSegmentCount++
 					}
 				} else if pType == 0x6474e551 { // PT_GNU_STACK
 					if pFlags&1 != 0 { // PF_X
@@ -308,7 +295,7 @@ func parseRawELFHeaders(data []byte, analysis *ELFAnalysis) error {
 
 		// Check if section header table is corrupted/missing despite valid PT_LOAD
 		if analysis.HasValidPTLoad {
-			if shoff == 0 || int(shoff) >= len(data) || shnum == 0 || int(shoff+uint64(shnum*shentsize)) > len(data) {
+			if sectionTableInvalid(shoff, shnum, shentsize, len(data)) {
 				analysis.CorruptedSectionHeaders = true
 			}
 		}
@@ -318,6 +305,16 @@ func parseRawELFHeaders(data []byte, analysis *ELFAnalysis) error {
 	}
 
 	return nil
+}
+
+// sectionTableInvalid reports whether the section header table is missing or
+// points outside the file. All arithmetic stays in uint64: shoff is
+// attacker-controlled and can wrap or go negative when cast to int.
+func sectionTableInvalid(shoff uint64, shnum, shentsize, dataLen int) bool {
+	if shoff == 0 || shoff > uint64(dataLen) || shnum == 0 || shentsize <= 0 {
+		return true
+	}
+	return uint64(shnum)*uint64(shentsize) > uint64(dataLen)-shoff
 }
 
 func inspectRawBytes(data []byte, analysis *ELFAnalysis) {
@@ -342,31 +339,23 @@ func inspectRawBytes(data []byte, analysis *ELFAnalysis) {
 	}
 
 	// High-risk process injection & memory execution primitives in raw strings
-	capStrings := []string{
-		"memfd_create",
-		"process_vm_writev",
-		"VirtualAllocEx",
-		"ptrace",
-	}
 	for _, s := range capStrings {
 		if bytes.Contains(data, []byte(s)) {
 			addCapability(analysis, s)
 		}
 	}
 
-	// Shell invocation and reverse shell indicators
-	iocPatterns := []string{
-		"/dev/tcp/",
-		"sh -i",
-		"bash -i",
-		"| sh",
-		"| bash",
-		"|/bin/sh",
-		"|/bin/bash",
+	for _, ioc := range scanRawIOCs(data) {
+		addIOC(analysis, ioc)
 	}
+}
+
+// scanRawIOCs inspects bytes for shell payloads and non-private C2 IPv4 addresses.
+func scanRawIOCs(data []byte) []string {
+	var iocs []string
 	for _, p := range iocPatterns {
 		if bytes.Contains(data, []byte(p)) {
-			addIOC(analysis, p)
+			iocs = append(iocs, p)
 		}
 	}
 
@@ -391,6 +380,17 @@ func inspectRawBytes(data []byte, analysis *ELFAnalysis) {
 		case "8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1", "9.9.9.9", "149.112.112.112", "208.67.222.222", "208.67.220.220":
 			continue
 		}
-		addIOC(analysis, "public-c2-ip:"+ipStr)
+		ioc := "public-c2-ip:" + ipStr
+		found := false
+		for _, existing := range iocs {
+			if existing == ioc {
+				found = true
+				break
+			}
+		}
+		if !found {
+			iocs = append(iocs, ioc)
+		}
 	}
+	return iocs
 }

@@ -105,6 +105,7 @@ func (s *Server) Start(ctx context.Context) error {
 		return net.ErrClosed
 	}
 	s.ln = ln
+	s.wg.Add(1)
 	s.mu.Unlock()
 
 	// Shutdown asynchronously if context is cancelled
@@ -113,7 +114,6 @@ func (s *Server) Start(ctx context.Context) error {
 		_ = s.Stop()
 	}()
 
-	s.wg.Add(1)
 	defer s.wg.Done()
 
 	for {
@@ -128,7 +128,9 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("accept: %w", err)
 		}
 
-		s.trackConn(conn)
+		if !s.trackConn(conn) {
+			continue
+		}
 		go s.handleConn(conn)
 	}
 }
@@ -189,6 +191,10 @@ func (s *Server) Stop() error {
 			_ = c.Close()
 		}
 
+		// Wait for the accept loop and every in-flight handler to unwind so
+		// Stop returns only after all connection goroutines have exited.
+		s.wg.Wait()
+
 		// Remove socket file
 		if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
 			if stopErr == nil {
@@ -199,14 +205,16 @@ func (s *Server) Stop() error {
 	return stopErr
 }
 
-func (s *Server) trackConn(c net.Conn) {
+func (s *Server) trackConn(c net.Conn) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.closed {
-		s.conns[c] = struct{}{}
-	} else {
+	if s.closed {
 		_ = c.Close()
+		return false
 	}
+	s.conns[c] = struct{}{}
+	s.wg.Add(1)
+	return true
 }
 
 func (s *Server) untrackConn(c net.Conn) {
@@ -219,6 +227,7 @@ func (s *Server) handleConn(conn net.Conn) {
 	defer func() {
 		s.untrackConn(conn)
 		_ = conn.Close()
+		s.wg.Done()
 	}()
 
 	// SO_PEERCRED check: caller must match current UID

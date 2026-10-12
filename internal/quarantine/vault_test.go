@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/fsutil"
 )
@@ -103,6 +104,71 @@ func TestQuarantineFileNeutralizesArtifact(t *testing.T) {
 	}
 }
 
+func TestQuarantineRespectsVaultSizeCap(t *testing.T) {
+	v, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	v.SetLimits(1, 0)
+	srcDir := t.TempDir()
+	first := filepath.Join(srcDir, "first.bin")
+	second := filepath.Join(srcDir, "second.bin")
+	writeFile(t, first, bytes.Repeat([]byte("a"), 600*1024), 0644)
+	writeFile(t, second, bytes.Repeat([]byte("b"), 600*1024), 0644)
+	if _, err := v.QuarantineFile(first, 90, nil, nil, nil); err != nil {
+		t.Fatalf("first quarantine: %v", err)
+	}
+	if _, err := v.QuarantineFile(second, 90, nil, nil, nil); err == nil || !strings.Contains(err.Error(), "vault size cap exceeded") {
+		t.Fatalf("second quarantine error = %v, want size cap error", err)
+	}
+	if got, err := os.ReadFile(second); err != nil || len(got) != 600*1024 {
+		t.Fatalf("rejected source was modified: len=%d, error=%v", len(got), err)
+	}
+	items, err := v.List()
+	if err != nil || len(items) != 1 {
+		t.Fatalf("vault after rejection = %d items, error=%v; want 1", len(items), err)
+	}
+}
+
+func TestSweepPurgesExpiredItems(t *testing.T) {
+	v, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	v.SetLimits(0, 14)
+	srcDir := t.TempDir()
+	oldPath := filepath.Join(srcDir, "old.bin")
+	newPath := filepath.Join(srcDir, "new.bin")
+	writeFile(t, oldPath, []byte("old"), 0644)
+	writeFile(t, newPath, []byte("new"), 0644)
+	oldItem, err := v.QuarantineFile(oldPath, 90, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newItem, err := v.QuarantineFile(newPath, 90, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldItem.QuarantinedAt = time.Now().UTC().AddDate(0, 0, -15)
+	if err := v.writeMeta(oldItem); err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Sweep(); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if _, err := v.Inspect(oldItem.ID); err != ErrItemNotFound {
+		t.Errorf("expired metadata still present: %v", err)
+	}
+	if _, err := os.Stat(v.artifactPath(oldItem.ID)); !os.IsNotExist(err) {
+		t.Errorf("expired artifact still present: %v", err)
+	}
+	if _, err := v.Inspect(newItem.ID); err != nil {
+		t.Errorf("unexpired item removed: %v", err)
+	}
+}
+
 func TestQuarantinePKGBUILDWritesBlockingStub(t *testing.T) {
 	vaultDir := t.TempDir()
 	srcDir := t.TempDir()
@@ -193,6 +259,42 @@ func TestRestoreToOriginalPath(t *testing.T) {
 	}
 	if _, err := v.Inspect(meta.ID); err != ErrItemNotFound {
 		t.Errorf("Inspect after restore = %v, want ErrItemNotFound", err)
+	}
+}
+
+func TestQuarantinePreservesArtifactWhenMetadataWriteFails(t *testing.T) {
+	vaultDir := t.TempDir()
+	srcDir := t.TempDir()
+	v, err := New(vaultDir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer v.Close()
+
+	content := []byte("preserve me")
+	srcPath := filepath.Join(srcDir, "payload.bin")
+	writeFile(t, srcPath, content, 0644)
+
+	sum := sha256.Sum256(content)
+	id := hex.EncodeToString(sum[:])
+	// Make the sidecar rename fail after the source has moved into the vault.
+	if err := os.Mkdir(v.metaPath(id), 0700); err != nil {
+		t.Fatal(err)
+	}
+	_, err = v.QuarantineFile(srcPath, 90, nil, nil, nil)
+	if err == nil {
+		t.Fatal("expected metadata write failure")
+	}
+	artifact := v.artifactPath(id)
+	if _, statErr := os.Stat(artifact); statErr != nil {
+		t.Fatalf("artifact was lost after failed quarantine: %v", statErr)
+	}
+	if err := os.Chmod(artifact, 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(artifact)
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("preserved artifact = %q, err %v", got, err)
 	}
 }
 

@@ -409,6 +409,35 @@ func TestSocketPermissions(t *testing.T) {
 	}
 }
 
+// TestStopJoinsActiveHandlers verifies Stop waits for an in-flight handler to
+// unwind instead of returning while its goroutine still runs.
+func TestStopJoinsActiveHandlers(t *testing.T) {
+	v := newVault(t)
+	sock, srv := startServer(t, v, ipc.StaticStatusProvider{})
+
+	conn, err := net.DialTimeout("unix", sock, time.Second)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Let the accept loop hand the connection to a handler, which then blocks
+	// in scanner.Scan waiting for a request line.
+	time.Sleep(100 * time.Millisecond)
+
+	done := make(chan error, 1)
+	go func() { done <- srv.Stop() }()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Stop: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Stop did not return after joining handlers")
+	}
+}
+
 func TestStopRemovesSocket(t *testing.T) {
 	v := newVault(t)
 	sock := shortSocketPath(t)

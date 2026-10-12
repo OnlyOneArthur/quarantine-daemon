@@ -9,7 +9,6 @@ import (
 
 // Client is the daemon IPC surface the TUI uses. The TUI never touches the vault directly.
 type Client interface {
-	Ping(ctx context.Context) error
 	GetStatus(ctx context.Context) (*ipc.StatusResponse, error)
 	ListVault(ctx context.Context) ([]*quarantine.ItemMetadata, error)
 	InspectItem(ctx context.Context, id string) (*quarantine.ItemMetadata, error)

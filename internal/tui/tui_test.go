@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/ipc"
@@ -29,17 +30,11 @@ type fakeClient struct {
 	restored []string
 	purged   []string
 	added    []string
-	pings    int
 	closed   bool
 }
 
 func newFakeClient() *fakeClient {
 	return &fakeClient{itemsByID: map[string]*quarantine.ItemMetadata{}}
-}
-
-func (f *fakeClient) Ping(ctx context.Context) error {
-	f.pings++
-	return nil
 }
 
 func (f *fakeClient) GetStatus(ctx context.Context) (*ipc.StatusResponse, error) {
@@ -184,6 +179,38 @@ func connectedModel(t *testing.T, f *fakeClient) *Model {
 	return got
 }
 
+func TestSpinnerTickLoopStartsOnlyOnce(t *testing.T) {
+	orig := spinnerTickCmd
+	starts := 0
+	spinnerTickCmd = func(spinner.Model) tea.Cmd {
+		starts++
+		return func() tea.Msg { return nil }
+	}
+	t.Cleanup(func() { spinnerTickCmd = orig })
+
+	m := NewModel(nil, "test")
+	m.connected = true
+	m.pane = paneDashboard
+	if _, cmd := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24}); cmd == nil {
+		t.Fatal("visible spinner did not start tick loop")
+	}
+	if starts != 1 || !m.spinActive {
+		t.Fatalf("spinner starts=%d active=%t, want 1 active loop", starts, m.spinActive)
+	}
+	if _, cmd := m.Update(tea.WindowSizeMsg{Width: 81, Height: 24}); cmd != nil {
+		t.Fatal("unrelated update started a duplicate spinner tick")
+	}
+	if starts != 1 {
+		t.Fatalf("spinner tick loop started %d times, want once", starts)
+	}
+
+	m.status = &ipc.StatusResponse{}
+	m.Update(tea.WindowSizeMsg{Width: 81, Height: 24})
+	if m.spinActive {
+		t.Fatal("spinner remained active after loading completed")
+	}
+}
+
 func TestInitConnectsAndLoadsState(t *testing.T) {
 	f := newFakeClient()
 	f.status = &ipc.StatusResponse{Version: "1.2.3", Uptime: 61, ScannedCount: 5, QuarantineCount: 2, WatchPaths: []string{"/tmp"}}
@@ -199,6 +226,37 @@ func TestInitConnectsAndLoadsState(t *testing.T) {
 	}
 	if len(m.items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(m.items))
+	}
+}
+
+func TestRPCErrorKeepsClientAndLoadedStateVisible(t *testing.T) {
+	f := newFakeClient()
+	f.status = &ipc.StatusResponse{Version: "loaded"}
+	f.items = []*quarantine.ItemMetadata{sampleItem("stored")}
+	m := connectedModel(t, f)
+	m.inspected = f.items[0]
+	err := &ipc.RPCError{Code: "FAILED", Message: "retry later"}
+	cases := []struct {
+		name string
+		msg  tea.Msg
+	}{
+		{"status", statusMsg{client: f, err: err}},
+		{"vault", vaultMsg{client: f, err: err}},
+		{"inspect", inspectMsg{client: f, err: err}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m.Update(tc.msg)
+			if m.client != f || !m.connected || f.closed {
+				t.Fatal("RPC error dropped the live client")
+			}
+			if !m.noticeErr || !strings.Contains(m.notice, err.Error()) {
+				t.Fatalf("error notice = %q (isErr=%v)", m.notice, m.noticeErr)
+			}
+			if m.status == nil || m.status.Version != "loaded" || len(m.items) != 1 || m.inspected != f.items[0] {
+				t.Fatal("RPC error cleared loaded state")
+			}
+		})
 	}
 }
 
@@ -276,11 +334,56 @@ func TestInspectorOpensSelectedItem(t *testing.T) {
 	}
 }
 
+// TestActionsFollowActivePane asserts Restore/Purge bind to the pane the user
+// is looking at: the dashboard cursor is not a valid target, and the inspector
+// acts on the inspected item even when the vault cursor points elsewhere.
+func TestActionsFollowActivePane(t *testing.T) {
+	f := newFakeClient()
+	first := sampleItem("aaaa1111")
+	second := sampleItem("bbbb2222")
+	f.items = []*quarantine.ItemMetadata{first, second}
+	f.itemsByID[first.ID] = first
+	f.itemsByID[second.ID] = second
+	m := connectedModel(t, f)
+
+	// Dashboard: the vault cursor is hidden, so r/d must do nothing.
+	m.pane = paneDashboard
+	cur, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m = cur.(*Model)
+	if m.pending != confirmNone {
+		t.Fatalf("dashboard armed confirmation on a hidden cursor: %v", m.pending)
+	}
+
+	// Move the vault cursor to the second item, then inspect the first.
+	m.pane = paneVault
+	cur, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m = cur.(*Model)
+	if m.selected() != second {
+		t.Fatalf("cursor setup failed: %+v", m.selected())
+	}
+	m.inspected = first
+	m.pane = paneInspector
+
+	cur, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
+	m = cur.(*Model)
+	if m.pending != confirmRestore {
+		t.Fatalf("inspector did not arm restore: %v", m.pending)
+	}
+	cur, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	m = cur.(*Model)
+	cur, _ = feed(t, m, cmd)
+	m = cur.(*Model)
+	if len(f.restored) != 1 || f.restored[0] != first.ID {
+		t.Fatalf("restored %v, want the inspected item %s", f.restored, first.ID)
+	}
+}
+
 func TestRestoreRequiresConfirmation(t *testing.T) {
 	f := newFakeClient()
 	item := sampleItem("abcd1234")
 	f.items = []*quarantine.ItemMetadata{item}
 	m := connectedModel(t, f)
+	m.pane = paneVault
 
 	// r arms the confirmation, no RPC yet.
 	cur, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
@@ -322,6 +425,7 @@ func TestPurgeRequiresConfirmation(t *testing.T) {
 	item := sampleItem("abcd1234")
 	f.items = []*quarantine.ItemMetadata{item}
 	m := connectedModel(t, f)
+	m.pane = paneVault
 
 	cur, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
 	m = cur.(*Model)
@@ -343,6 +447,7 @@ func TestRestoreErrorSurfacesNotice(t *testing.T) {
 	f.items = []*quarantine.ItemMetadata{item}
 	f.restoreErr = &ipc.RPCError{Code: "DEST_BUSY", Message: "destination busy"}
 	m := connectedModel(t, f)
+	m.pane = paneVault
 
 	cur, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")})
 	m = cur.(*Model)

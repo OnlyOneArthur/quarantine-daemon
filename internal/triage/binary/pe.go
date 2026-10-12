@@ -61,5 +61,21 @@ func AnalyzePE(data []byte) (*PEAnalysis, error) {
 		analysis.TextEntropy = entropy.Calculate(data)
 	}
 
+	for _, capability := range capStrings {
+		if bytes.Contains(data, []byte(capability)) {
+			present := false
+			for _, existing := range analysis.SuspiciousCapabilities {
+				if existing == capability {
+					present = true
+					break
+				}
+			}
+			if !present {
+				analysis.SuspiciousCapabilities = append(analysis.SuspiciousCapabilities, capability)
+			}
+		}
+	}
+	analysis.SuspiciousIOCs = scanRawIOCs(data)
+
 	return analysis, nil
 }

