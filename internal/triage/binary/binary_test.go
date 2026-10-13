@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"crypto/rand"
 	"encoding/binary"
+	mathrand "math/rand"
+	"reflect"
+	"regexp"
 	"testing"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
@@ -504,6 +507,55 @@ func TestAnalyzeELFRejectsWrappingSegmentBounds(t *testing.T) {
 	}
 	if analysis.TextSectionFound {
 		t.Fatalf("wrapping pOffset/pFilesz parsed a text section")
+	}
+}
+
+func TestScanRawIOCsIPv4Compatibility(t *testing.T) {
+	data := []byte("x1.2.3.4 8.8.8.8 256.1.1.1 1.2.3.4.5 01.2.3.4 1.2.3.04 1.2.3.4:443 1.2.3.4\n")
+	got := scanRawIOCs(data)
+	want := []string{"public-c2-ip:1.2.3.4"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("scanRawIOCs() = %v, want %v", got, want)
+	}
+}
+
+func TestIPv4ScannerMatchesPreviousRegexp(t *testing.T) {
+	previous := regexp.MustCompile(`\b(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b`)
+	for _, data := range [][]byte{
+		[]byte("1.2.3.4 01.2.3.4 1.2.3.04 256.1.1.1 1.2.3.4.5 _1.2.3.4 1.2.3.4x 0.0.0.0"),
+		[]byte("1.2.3.4 1.2.3.4 1.2.3.4 1.2.3.4"),
+		bytes.Repeat([]byte("1.2.3.4 "), 101),
+		[]byte("001.002.003.004 199.249.255.255 255.256.1.1 1.2.3.444 é1.2.3.4"),
+	} {
+		for _, limit := range []int{1, 2, 100} {
+			var got []string
+			forEachIPv4(data, limit, func(m []byte) { got = append(got, string(m)) })
+			var want []string
+			for _, m := range previous.FindAll(data, limit) {
+				want = append(want, string(m))
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("%q limit %d: got %v, want %v", data, limit, got, want)
+			}
+		}
+	}
+	// Deterministic malformed and embedded candidates catch boundary and prefix drift.
+	rng := mathrand.New(mathrand.NewSource(1))
+	alphabet := []byte("0123456789._a!é")
+	for trial := 0; trial < 1000; trial++ {
+		data := make([]byte, 256)
+		for i := range data {
+			data[i] = alphabet[rng.Intn(len(alphabet))]
+		}
+		var got []string
+		forEachIPv4(data, 100, func(m []byte) { got = append(got, string(m)) })
+		var want []string
+		for _, m := range previous.FindAll(data, 100) {
+			want = append(want, string(m))
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("trial %d data %q: got %v, want %v", trial, data, got, want)
+		}
 	}
 }
 

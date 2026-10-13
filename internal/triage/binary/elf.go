@@ -7,7 +7,6 @@ import (
 	"errors"
 	"io"
 	"net"
-	"regexp"
 	"strings"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/entropy"
@@ -17,7 +16,6 @@ var (
 	ErrNotELF       = errors.New("not an ELF binary")
 	ErrELFTruncated = errors.New("ELF binary truncated")
 
-	ipv4Regex   = regexp.MustCompile(`\b(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\b`)
 	iocPatterns = []string{"/dev/tcp/", "sh -i", "bash -i", "| sh", "| bash", "|/bin/sh", "|/bin/bash"}
 	capStrings  = []string{"memfd_create", "process_vm_writev", "VirtualAllocEx", "ptrace"}
 )
@@ -359,25 +357,24 @@ func scanRawIOCs(data []byte) []string {
 	}
 
 	// Non-private C2 IP detection
-	matches := ipv4Regex.FindAll(data, 100)
-	for _, m := range matches {
+	forEachIPv4(data, 100, func(m []byte) {
 		ipStr := string(m)
 		ip := net.ParseIP(ipStr)
 		if ip == nil || ip.To4() == nil {
-			continue
+			return
 		}
 		// Skip unspecified, loopback, private, link-local, multicast, or broadcast
 		if ip.IsUnspecified() || ip.IsLoopback() || ip.IsPrivate() ||
 			ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
-			continue
+			return
 		}
 		if ip.To4()[0] == 0 || ipStr == "255.255.255.255" {
-			continue
+			return
 		}
 		// Skip common public DNS resolvers and benign infrastructure
 		switch ipStr {
 		case "8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1", "9.9.9.9", "149.112.112.112", "208.67.222.222", "208.67.220.220":
-			continue
+			return
 		}
 		ioc := "public-c2-ip:" + ipStr
 		found := false
@@ -390,6 +387,47 @@ func scanRawIOCs(data []byte) []string {
 		if !found {
 			iocs = append(iocs, ioc)
 		}
-	}
+	})
 	return iocs
+}
+
+// forEachIPv4 scans ASCII addresses with regexp \b boundaries and at most limit matches.
+func forEachIPv4(data []byte, limit int, visit func([]byte)) {
+	for i, count := 0, 0; i < len(data) && count < limit; i++ {
+		if data[i] < '0' || data[i] > '9' || i > 0 && isWordByte(data[i-1]) {
+			continue
+		}
+		end, ok := parseIPv4Candidate(data, i)
+		if !ok || end < len(data) && isWordByte(data[end]) {
+			continue
+		}
+		visit(data[i:end])
+		count++
+		i = end - 1
+	}
+}
+
+func isWordByte(b byte) bool {
+	return b == '_' || b >= '0' && b <= '9' || b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'
+}
+
+func parseIPv4Candidate(data []byte, start int) (int, bool) {
+	i := start
+	for octet := 0; octet < 4; octet++ {
+		begin, value := i, 0
+		for i < len(data) && data[i] >= '0' && data[i] <= '9' && i-begin < 3 {
+			value = value*10 + int(data[i]-'0')
+			i++
+		}
+		if i == begin || value > 255 || i < len(data) && data[i] >= '0' && data[i] <= '9' {
+			return start, false
+		}
+		if octet < 3 {
+			if i == len(data) || data[i] != '.' {
+				return start, false
+			}
+			i++
+		}
+	}
+	return i, true
 }
