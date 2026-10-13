@@ -81,6 +81,24 @@ Quarantine vault  ->  IPC server (Unix socket, SO_PEERCRED)  ->  TUI client
 
 ## Install
 
+### One-line install (curl)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OnlyOneArthur/quarantine-daemon/main/install.sh | bash
+```
+
+Options can be passed via `bash -s --`:
+
+```bash
+# install binary only (skip systemd user service)
+curl -fsSL https://raw.githubusercontent.com/OnlyOneArthur/quarantine-daemon/main/install.sh | bash -s -- --no-service
+
+# custom install prefix
+curl -fsSL https://raw.githubusercontent.com/OnlyOneArthur/quarantine-daemon/main/install.sh | bash -s -- --prefix ~/.local
+```
+
+### From source
+
 ```bash
 git clone https://github.com/OnlyOneArthur/quarantine-daemon.git
 cd quarantine-daemon
@@ -95,12 +113,13 @@ given, installs and enables `quarantined.service` as a systemd **user** unit.
 
   --prefix DIR     install prefix (default: ~/.local)
   --bin-dir DIR    binary destination (default: PREFIX/bin)
+  --ref REF        git branch/tag to fetch if run remotely (default: main)
   --no-service     build and install the binary only
   --no-enable      install the unit but do not enable/start it
   -h, --help       show help
 ```
 
-Environment overrides: `PREFIX`, `BIN_DIR`, `DESTDIR`.
+Environment overrides: `PREFIX`, `BIN_DIR`, `DESTDIR`, `REPO_URL`, `REF`.
 
 ### Manual install
 

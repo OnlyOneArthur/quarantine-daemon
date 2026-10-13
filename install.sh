@@ -6,25 +6,50 @@
 # and enables quarantined.service as a systemd USER unit.
 #
 #   ./install.sh [options]
+#   curl -fsSL https://raw.githubusercontent.com/OnlyOneArthur/quarantine-daemon/main/install.sh | bash -s -- [options]
 #
 #     --prefix DIR     install prefix (default: ~/.local)
 #     --bin-dir DIR    binary destination (default: PREFIX/bin)
+#     --ref REF        git branch/tag to fetch if run remotely (default: main)
+#     --repo-url URL   git repository URL to clone if run remotely
 #     --no-service     build and install the binary only
 #     --no-enable      install the unit but do not enable/start it
 #     -h, --help       show this help
 #
-# Environment overrides: PREFIX, BIN_DIR, DESTDIR (staging root for packaging).
+# Environment overrides: PREFIX, BIN_DIR, DESTDIR, REPO_URL, REF.
 
 set -euo pipefail
 
-REPO_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PREFIX=${PREFIX:-$HOME/.local}
 BIN_DIR=${BIN_DIR:-}
+REPO_URL=${REPO_URL:-https://github.com/OnlyOneArthur/quarantine-daemon.git}
+REF=${REF:-${VERSION:-main}}
 INSTALL_SERVICE=1
 ENABLE_SERVICE=1
 
 usage() {
-    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
+    cat << 'EOF'
+install.sh - build and install quarantined.
+
+Installs the binary into ~/.local/bin and, unless --no-service is given, installs
+and enables quarantined.service as a systemd USER unit.
+
+Usage:
+  ./install.sh [options]
+  curl -fsSL https://raw.githubusercontent.com/OnlyOneArthur/quarantine-daemon/main/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/OnlyOneArthur/quarantine-daemon/main/install.sh | bash -s -- [options]
+
+Options:
+  --prefix DIR     install prefix (default: ~/.local)
+  --bin-dir DIR    binary destination (default: PREFIX/bin)
+  --ref REF        git branch/tag to fetch if run remotely (default: main)
+  --repo-url URL   git repository URL to clone if run remotely
+  --no-service     build and install the binary only
+  --no-enable      install the unit but do not enable/start it
+  -h, --help       show this help
+
+Environment overrides: PREFIX, BIN_DIR, DESTDIR, REPO_URL, REF.
+EOF
 }
 
 die() {
@@ -42,13 +67,19 @@ warn() {
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --prefix)   [ $# -ge 2 ] || die "--prefix needs a value"; PREFIX=$2; shift 2 ;;
-        --prefix=*) PREFIX=${1#*=}; shift ;;
-        --bin-dir)  [ $# -ge 2 ] || die "--bin-dir needs a value"; BIN_DIR=$2; shift 2 ;;
-        --bin-dir=*) BIN_DIR=${1#*=}; shift ;;
+        --prefix)     [ $# -ge 2 ] || die "--prefix needs a value"; PREFIX=$2; shift 2 ;;
+        --prefix=*)   PREFIX=${1#*=}; shift ;;
+        --bin-dir)    [ $# -ge 2 ] || die "--bin-dir needs a value"; BIN_DIR=$2; shift 2 ;;
+        --bin-dir=*)  BIN_DIR=${1#*=}; shift ;;
+        --ref)        [ $# -ge 2 ] || die "--ref needs a value"; REF=$2; shift 2 ;;
+        --ref=*)      REF=${1#*=}; shift ;;
+        --version)    [ $# -ge 2 ] || die "--version needs a value"; REF=$2; shift 2 ;;
+        --version=*)  REF=${1#*=}; shift ;;
+        --repo-url)   [ $# -ge 2 ] || die "--repo-url needs a value"; REPO_URL=$2; shift 2 ;;
+        --repo-url=*) REPO_URL=${1#*=}; shift ;;
         --no-service) INSTALL_SERVICE=0; shift ;;
         --no-enable)  ENABLE_SERVICE=0; shift ;;
-        -h|--help)  usage; exit 0 ;;
+        -h|--help)    usage; exit 0 ;;
         *) die "unknown option: $1 (try --help)" ;;
     esac
 done
@@ -58,11 +89,59 @@ DESTDIR=${DESTDIR:-}
 BIN_PATH=$BIN_DIR/quarantined
 
 command -v go >/dev/null 2>&1 || die "go not found in PATH; install Go 1.26+ first"
-[ -f "$REPO_DIR/go.mod" ] || die "go.mod not found in $REPO_DIR; run this script from the repository"
+
+BUILD_DIR=""
+TMP_REPO=""
+cleanup() {
+    [ -n "$BUILD_DIR" ] && rm -rf "$BUILD_DIR"
+    [ -n "$TMP_REPO" ] && rm -rf "$TMP_REPO"
+}
+trap cleanup EXIT INT TERM
+
+# ---- locate or fetch repository ----------------------------------------------
+REPO_DIR=""
+if [ -n "${BASH_SOURCE[0]:-}" ] && [ -f "${BASH_SOURCE[0]}" ]; then
+    CANDIDATE=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)
+    if [ -f "$CANDIDATE/go.mod" ] && grep -q "quarantine-daemon" "$CANDIDATE/go.mod" 2>/dev/null; then
+        REPO_DIR=$CANDIDATE
+    fi
+fi
+
+if [ -z "$REPO_DIR" ] && [ -f "./go.mod" ] && grep -q "quarantine-daemon" "./go.mod" 2>/dev/null; then
+    REPO_DIR=$(pwd)
+fi
+
+if [ -z "$REPO_DIR" ]; then
+    TMP_REPO=$(mktemp -d)
+    info "fetching quarantine-daemon source ($REF)..."
+    if command -v git >/dev/null 2>&1; then
+        git clone --depth 1 --branch "$REF" -q "$REPO_URL" "$TMP_REPO" || \
+            die "failed to clone $REPO_URL at ref '$REF' (try --ref main or a valid tag)"
+    elif command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
+        # Derive https://host/OWNER/REPO from the clone URL for the archive endpoint.
+        SLUG=${REPO_URL%.git}
+        SLUG=${SLUG#*://}
+        SLUG=${SLUG#*@}
+        TAR_BASE="https://${SLUG}"
+        fetched=0
+        for kind in heads tags; do
+            TAR_URL="${TAR_BASE}/archive/refs/${kind}/${REF}.tar.gz"
+            if curl -fsSL "$TAR_URL" | tar -xz -C "$TMP_REPO" --strip-components=1 2>/dev/null; then
+                fetched=1
+                break
+            fi
+        done
+        [ "$fetched" -eq 1 ] || die "failed to download source archive for ref '$REF' from $TAR_BASE"
+    else
+        die "git or (curl and tar) required to fetch repository"
+    fi
+    REPO_DIR=$TMP_REPO
+fi
+
+[ -f "$REPO_DIR/go.mod" ] || die "go.mod not found in $REPO_DIR; repository source invalid"
 
 # ---- build -------------------------------------------------------------------
 BUILD_DIR=$(mktemp -d)
-trap 'rm -rf "$BUILD_DIR"' EXIT
 info "building quarantined from $REPO_DIR"
 ( cd "$REPO_DIR" && go build -trimpath -o "$BUILD_DIR/quarantined" ./cmd/quarantined )
 
