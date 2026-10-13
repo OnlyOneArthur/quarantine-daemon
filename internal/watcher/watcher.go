@@ -300,6 +300,18 @@ func (w *Watcher) handleFsEvent(ev fsnotify.Event) {
 			if addErr := w.addRecursive(cleanPath); addErr != nil {
 				w.sendError(addErr)
 			}
+			_ = filepath.WalkDir(cleanPath, func(path string, d fs.DirEntry, err error) error {
+				if err != nil {
+					return nil
+				}
+				if d.IsDir() && path != cleanPath && strings.HasPrefix(d.Name(), ".") {
+					return filepath.SkipDir
+				}
+				if !d.IsDir() {
+					w.dispatchFileEvent(filepath.Clean(path))
+				}
+				return nil
+			})
 			return
 		}
 	}

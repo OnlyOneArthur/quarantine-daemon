@@ -1,11 +1,12 @@
 package pkgbuild
 
 import (
-	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
+	"github.com/OnlyOneArthur/quarantine-daemon/internal/fsutil"
 )
 
 // ScorePKGBUILD computes the threat score, verdict, and supporting metadata for an analyzed PKGBUILD.
@@ -102,10 +103,20 @@ func TriagePKGBUILD(data []byte, path string, cfg *config.Config) (*TriageResult
 	// If install scriptlet specified in PKGBUILD, check for accompanying .install file in directory
 	if analysis.Install != "" && path != "" {
 		dir := filepath.Dir(path)
-		installPath := filepath.Join(dir, analysis.Install)
-		if installData, err := os.ReadFile(installPath); err == nil {
-			if installAnalysis, err := ParseInstallScript(installData, installPath); err == nil {
-				analysis.InstallAnalysis = installAnalysis
+		installPath := filepath.Clean(filepath.Join(dir, analysis.Install))
+		rel, err := filepath.Rel(dir, installPath)
+		if err == nil && !strings.HasPrefix(rel, "..") && rel != "." {
+			if sf, err := fsutil.OpenSafe(installPath); err == nil {
+				maxBytes := int64(4 * 1024 * 1024)
+				if cfg != nil && cfg.Binary.MaxScanSizeMB > 0 {
+					maxBytes = cfg.Binary.MaxScanSizeMB * 1024 * 1024
+				}
+				if installData, err := fsutil.ReadBounded(sf.File, maxBytes); err == nil {
+					if installAnalysis, err := ParseInstallScript(installData, installPath); err == nil {
+						analysis.InstallAnalysis = installAnalysis
+					}
+				}
+				_ = sf.Close()
 			}
 		}
 	}

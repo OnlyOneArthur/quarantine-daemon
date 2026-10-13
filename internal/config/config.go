@@ -133,11 +133,12 @@ func Load(path string) (*Config, error) {
 		baseDir = abs
 	}
 
-	// Expand paths: "~" first, then anchor anything still relative to the config file.
+	// Expand paths: environment variables and "~" first, then anchor anything still relative to the config file.
 	resolve := func(p string) string {
 		if p == "" {
 			return ""
 		}
+		p = os.ExpandEnv(p)
 		p = ExpandHome(p)
 		if filepath.IsAbs(p) {
 			return p

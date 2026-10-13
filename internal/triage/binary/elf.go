@@ -394,7 +394,7 @@ func scanRawIOCs(data []byte) []string {
 // forEachIPv4 scans ASCII addresses with regexp \b boundaries and at most limit matches.
 func forEachIPv4(data []byte, limit int, visit func([]byte)) {
 	for i, count := 0, 0; i < len(data) && count < limit; i++ {
-		if data[i] < '0' || data[i] > '9' || i > 0 && isWordByte(data[i-1]) {
+		if !isDigitByte[data[i]] || i > 0 && isWordByte(data[i-1]) {
 			continue
 		}
 		end, ok := parseIPv4Candidate(data, i)
@@ -406,6 +406,13 @@ func forEachIPv4(data []byte, limit int, visit func([]byte)) {
 		i = end - 1
 	}
 }
+
+var isDigitByte = func() (t [256]bool) {
+	for c := byte('0'); c <= '9'; c++ {
+		t[c] = true
+	}
+	return
+}()
 
 func isWordByte(b byte) bool {
 	return b == '_' || b >= '0' && b <= '9' || b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'

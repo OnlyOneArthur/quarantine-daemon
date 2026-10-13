@@ -26,3 +26,26 @@ func BenchmarkTriageSyntheticELF32MiB(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkForEachIPv4_32MiB(b *testing.B) {
+	data := make([]byte, 32<<20)
+	mathrand.New(mathrand.NewSource(1)).Read(data)
+	b.SetBytes(int64(len(data)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		count := 0
+		forEachIPv4(data, 100, func(m []byte) { count++ })
+	}
+}
+
+func BenchmarkScanRawIOCs_32MiB(b *testing.B) {
+	data := make([]byte, 32<<20)
+	mathrand.New(mathrand.NewSource(1)).Read(data)
+	b.SetBytes(int64(len(data)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = scanRawIOCs(data)
+	}
+}

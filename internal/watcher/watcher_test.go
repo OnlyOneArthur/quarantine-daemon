@@ -373,3 +373,42 @@ func TestAddRoot(t *testing.T) {
 		t.Fatalf("expected file %s to appear in WatchedDirectories: %v", filePath, watchedDirs)
 	}
 }
+
+func TestDirectoryMoveDispatchesNestedFiles(t *testing.T) {
+	watchRoot := t.TempDir()
+	outsideDir := t.TempDir()
+
+	nestedSubdir := filepath.Join(outsideDir, "staged_dir")
+	if err := os.MkdirAll(nestedSubdir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	nestedFile := filepath.Join(nestedSubdir, "payload.bin")
+	if err := os.WriteFile(nestedFile, []byte("data"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+
+	w, err := New(Config{
+		Roots:         []string{watchRoot},
+		DebounceDelay: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New watcher: %v", err)
+	}
+	defer w.Close()
+
+	// Move staged_dir into watchRoot
+	destDir := filepath.Join(watchRoot, "moved_dir")
+	if err := os.Rename(nestedSubdir, destDir); err != nil {
+		t.Fatalf("rename dir: %v", err)
+	}
+
+	expectedFile := filepath.Join(destDir, "payload.bin")
+	select {
+	case ev := <-w.Events():
+		if ev.Path != expectedFile {
+			t.Fatalf("expected event for %s, got %s", expectedFile, ev.Path)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for event on moved directory nested file")
+	}
+}

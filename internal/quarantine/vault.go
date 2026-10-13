@@ -199,19 +199,20 @@ func (v *Vault) checkSizeCap(id string, size int64) error {
 		if len(name) != 64 || name == id {
 			continue // a matching hash replaces its existing artifact
 		}
-		if _, err := hex.DecodeString(name); err != nil {
+		if !isHex64(name) {
+			continue
+		}
+		if !entry.Type().IsRegular() {
 			continue
 		}
 		info, err := entry.Info()
 		if err != nil {
 			return fmt.Errorf("stat vault artifact %s: %w", name, err)
 		}
-		if info.Mode().IsRegular() {
-			if info.Size() > maxBytes-used {
-				return fmt.Errorf("vault size cap exceeded (%d MB)", v.maxVaultSizeMB)
-			}
-			used += info.Size()
+		if info.Size() > maxBytes-used {
+			return fmt.Errorf("vault size cap exceeded (%d MB)", v.maxVaultSizeMB)
 		}
+		used += info.Size()
 	}
 	if size > maxBytes-used {
 		return fmt.Errorf("vault size cap exceeded (%d MB)", v.maxVaultSizeMB)
@@ -237,7 +238,7 @@ func (v *Vault) Sweep() error {
 			id := strings.TrimSuffix(entry.Name(), metaSuffix)
 			meta, err := v.readMeta(entry.Name())
 			if err != nil {
-				return fmt.Errorf("read vault metadata %s: %w", id, err)
+				continue
 			}
 			if meta.ID != id || !meta.QuarantinedAt.Before(cutoff) {
 				continue
@@ -503,13 +504,48 @@ exit 1
 `
 
 func writePKGBUILDStub(path string) error {
-	tmpPath := path + ".quarantined.tmp"
-	if err := os.WriteFile(tmpPath, []byte(stubBody), 0755); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".pkgbuild-stub-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+
+	if _, err := tmp.WriteString(stubBody); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Chmod(tmpPath, 0755); err != nil {
+		cleanup()
 		return err
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
+		cleanup()
 		return err
 	}
 	return nil
+}
+
+func isHex64(s string) bool {
+	if len(s) != 64 {
+		return false
+	}
+	for i := 0; i < 64; i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+			return false
+		}
+	}
+	return true
 }

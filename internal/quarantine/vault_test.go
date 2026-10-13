@@ -454,3 +454,70 @@ func TestVaultLockHeldDuringOperation(t *testing.T) {
 	}
 	_ = unlock()
 }
+
+func TestWritePKGBUILDStubSymlinkAttack(t *testing.T) {
+	pkgDir := t.TempDir()
+	victimDir := t.TempDir()
+
+	pkgPath := filepath.Join(pkgDir, "PKGBUILD")
+	writeFile(t, pkgPath, []byte("pkgname=foo\n"), 0644)
+
+	victimPath := filepath.Join(victimDir, "sensitive.txt")
+	victimContent := []byte("secret content do not overwrite")
+	writeFile(t, victimPath, victimContent, 0644)
+
+	// Attacker pre-creates static tmpPath symlink pointing to victim file
+	trapSymlink := pkgPath + ".quarantined.tmp"
+	if err := os.Symlink(victimPath, trapSymlink); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if err := writePKGBUILDStub(pkgPath); err != nil {
+		t.Fatalf("writePKGBUILDStub failed: %v", err)
+	}
+
+	// Verify victim file was NOT overwritten
+	actualVictim, err := os.ReadFile(victimPath)
+	if err != nil {
+		t.Fatalf("read victim: %v", err)
+	}
+	if !bytes.Equal(actualVictim, victimContent) {
+		t.Fatalf("victim file was corrupted/overwritten by writePKGBUILDStub!")
+	}
+
+	// Verify PKGBUILD was replaced by stub
+	stubData, err := os.ReadFile(pkgPath)
+	if err != nil {
+		t.Fatalf("read stub: %v", err)
+	}
+	if !strings.Contains(string(stubData), "PKGBUILD blocked") {
+		t.Fatalf("expected stub in PKGBUILD, got %s", string(stubData))
+	}
+}
+
+func TestSweepCorruptMetadataDoesNotFail(t *testing.T) {
+	vaultDir := t.TempDir()
+	v, err := New(vaultDir)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer v.Close()
+
+	// Write valid quarantine item
+	srcPath := filepath.Join(t.TempDir(), "evil.bin")
+	writeFile(t, srcPath, []byte("payload"), 0755)
+	_, err = v.QuarantineFile(srcPath, 95, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("QuarantineFile: %v", err)
+	}
+
+	// Plant corrupted metadata file in vault
+	corruptMetaPath := filepath.Join(vaultDir, "corrupted_id.meta.json")
+	writeFile(t, corruptMetaPath, []byte("{invalid json garbage"), 0600)
+
+	// Sweep must not fail
+	v.SetLimits(100, 1)
+	if err := v.Sweep(); err != nil {
+		t.Fatalf("Sweep should not fail on corrupted metadata, got: %v", err)
+	}
+}

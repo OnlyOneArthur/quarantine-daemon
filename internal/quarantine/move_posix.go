@@ -59,6 +59,10 @@ func crossDeviceCopy(srcPath string, dev, ino uint64, destPath, vaultDir string)
 	}
 	defer src.Close()
 
+	if src.Dev != dev || src.Ino != ino {
+		return errors.New("source inode changed before cross-device copy")
+	}
+
 	tmp, err := os.CreateTemp(vaultDir, ".tmp-move-*")
 	if err != nil {
 		return err
@@ -92,6 +96,7 @@ func crossDeviceCopy(srcPath string, dev, ino uint64, destPath, vaultDir string)
 
 	match, err := fsutil.VerifyPathInodeMatch(srcPath, dev, ino)
 	if err != nil {
+		_ = os.Remove(destPath)
 		return err
 	}
 	if !match {
@@ -99,5 +104,9 @@ func crossDeviceCopy(srcPath string, dev, ino uint64, destPath, vaultDir string)
 		return errors.New("source inode changed during cross-device move")
 	}
 
-	return os.Remove(srcPath)
+	if err := os.Remove(srcPath); err != nil {
+		_ = os.Remove(destPath)
+		return err
+	}
+	return nil
 }

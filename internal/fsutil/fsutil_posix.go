@@ -16,7 +16,8 @@ import (
 func OpenSafe(path string) (*SafeFile, error) {
 	cleanPath := filepath.Clean(path)
 
-	fd, err := unix.Open(cleanPath, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	// O_NONBLOCK prevents hanging indefinitely if path is a FIFO / named pipe.
+	fd, err := unix.Open(cleanPath, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC|unix.O_NONBLOCK, 0)
 	if err != nil {
 		if errors.Is(err, unix.ELOOP) {
 			return nil, fmt.Errorf("%w: %s", ErrSymlinkNotAllowed, cleanPath)
@@ -33,6 +34,11 @@ func OpenSafe(path string) (*SafeFile, error) {
 	if (st.Mode & unix.S_IFMT) != unix.S_IFREG {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("%w: %s (mode: %o)", ErrNotRegularFile, cleanPath, st.Mode)
+	}
+
+	// Restore blocking mode for regular file reads
+	if flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0); err == nil {
+		_, _ = unix.FcntlInt(uintptr(fd), unix.F_SETFL, flags&^unix.O_NONBLOCK)
 	}
 
 	f := os.NewFile(uintptr(fd), cleanPath)

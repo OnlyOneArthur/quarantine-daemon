@@ -12,7 +12,11 @@ import (
 // peerCred extracts the peer's process credentials from a Unix domain socket
 // connection using LOCAL_PEERCRED. Only valid for SOCK_STREAM Unix sockets.
 func peerCred(conn net.Conn) (uid uint32, err error) {
-	raw, err := conn.(*net.UnixConn).SyscallConn()
+	unixConn, ok := conn.(*net.UnixConn)
+	if !ok {
+		return 0, fmt.Errorf("peer credentials require a Unix socket, got %T", conn)
+	}
+	raw, err := unixConn.SyscallConn()
 	if err != nil {
 		return 0, fmt.Errorf("extract raw conn: %w", err)
 	}

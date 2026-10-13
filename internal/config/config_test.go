@@ -127,3 +127,34 @@ vault_dir = "vault"
 		t.Errorf("expected watch[0] %q, got %v", filepath.Join(tmpDir, "watch_a"), cfg.Paths.Watch)
 	}
 }
+
+func TestLoadConfig_EnvVarExpansion(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("TEST_DAEMON_RUNTIME", tmpDir)
+
+	cfgPath := filepath.Join(tmpDir, "config.toml")
+	tomlData := []byte(`
+[service]
+socket_path = "$TEST_DAEMON_RUNTIME/daemon.sock"
+
+[quarantine]
+vault_dir = "$TEST_DAEMON_RUNTIME/vault"
+`)
+	if err := os.WriteFile(cfgPath, tomlData, 0600); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+
+	cfg, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+
+	expectedVault := filepath.Join(tmpDir, "vault")
+	if cfg.Quarantine.VaultDir != expectedVault {
+		t.Errorf("expected vault %q, got %q", expectedVault, cfg.Quarantine.VaultDir)
+	}
+	expectedSocket := filepath.Join(tmpDir, "daemon.sock")
+	if cfg.Service.SocketPath != expectedSocket {
+		t.Errorf("expected socket %q, got %q", expectedSocket, cfg.Service.SocketPath)
+	}
+}
