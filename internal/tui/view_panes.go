@@ -139,14 +139,19 @@ func (m *Model) renderVault() string {
 		}
 		cells = append(cells, padCell(c.title, w, c.right))
 	}
-	b.WriteString("  " + labelStyle.Bold(true).Render(strings.Join(cells, " ")) + "\n")
-	b.WriteString(ruleStyle.Render(strings.Repeat("─", m.bodyWidth())) + "\n")
+	b.WriteString("  ")
+	b.WriteString(labelStyle.Bold(true).Render(strings.Join(cells, " ")))
+	b.WriteByte('\n')
+	b.WriteString(ruleStyle.Render(strings.Repeat("─", m.bodyWidth())))
+	b.WriteByte('\n')
 
 	for i := m.offset; i < end; i++ {
-		b.WriteString(m.renderVaultRow(m.items[i], cols, pathW, i == m.cursor) + "\n")
+		b.WriteString(m.renderVaultRow(m.items[i], cols, pathW, i == m.cursor))
+		b.WriteByte('\n')
 	}
 	if end < len(m.items) {
-		b.WriteString(dimStyle.Render(fmt.Sprintf("... %d more", len(m.items)-end)) + "\n")
+		b.WriteString(dimStyle.Render(fmt.Sprintf("... %d more", len(m.items)-end)))
+		b.WriteByte('\n')
 	}
 	return b.String()
 }
