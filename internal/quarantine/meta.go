@@ -86,31 +86,29 @@ echo "ERROR: PKGBUILD blocked due to high-confidence security threat (Score >= 8
 exit 1
 `
 
-func writeAtomic(dir, pattern, dest string, data []byte, perm os.FileMode) error {
+func writeAtomic(dir, pattern, dest string, data []byte, perm os.FileMode) (retErr error) {
 	tmpFile, err := os.CreateTemp(dir, pattern)
 	if err != nil {
 		return err
 	}
 	tmpPath := tmpFile.Name()
-	cleanup := func() {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
-	}
+	defer func() {
+		if retErr != nil {
+			tmpFile.Close()
+			os.Remove(tmpPath)
+		}
+	}()
 
 	if _, err := tmpFile.Write(data); err != nil {
-		cleanup()
 		return err
 	}
 	if err := tmpFile.Sync(); err != nil {
-		cleanup()
 		return err
 	}
 	if err := tmpFile.Close(); err != nil {
-		_ = os.Remove(tmpPath)
 		return err
 	}
 	if err := os.Chmod(tmpPath, perm); err != nil {
-		_ = os.Remove(tmpPath)
 		return err
 	}
 	return os.Rename(tmpPath, dest)
@@ -123,6 +121,6 @@ func writePKGBUILDStub(path string) error {
 // rollbackArtifact moves a vault artifact back to dest after a post-move failure,
 // restoring the original permission bits so the file is left as it was found.
 func rollbackArtifact(artifactPath, dest string, mode os.FileMode) error {
-	_ = os.Chmod(artifactPath, mode.Perm())
+	os.Chmod(artifactPath, mode.Perm())
 	return os.Rename(artifactPath, dest)
 }
