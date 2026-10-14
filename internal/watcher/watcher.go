@@ -274,4 +274,3 @@ func (w *Watcher) unwatchDir(dir string) {
 		_ = w.fsWatcher.Remove(d)
 	}
 }
-

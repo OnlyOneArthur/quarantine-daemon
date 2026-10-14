@@ -15,6 +15,7 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 | TUI-02 | `internal/tui/view.go:207-670` | Spaghetti & Architecture | High | 729 LOC file + 67 LOC `renderWatchPane` | Resolved |
 | PKG-02 | `internal/triage/pkgbuild/rules.go:96-594` | Spaghetti & Architecture | High | 594 LOC file + 70 LOC `checkCallExpr`, 55 LOC `checkTamperingCommand`, 51 LOC `cmdSubstOutputExecuted` | Resolved |
 | WAT-01 | `internal/watcher/watcher.go:1-565` | Spaghetti & Architecture | High | 565 LOC file mixing monitoring, debouncing, file readiness polling, and reconcile walks | Resolved |
+| PKG-03 | `internal/triage/pkgbuild/scorer.go:13-95` | Spaghetti & Architecture | Medium | 82 LOC `ScorePKGBUILD` mixing trigger collection, score/verdict calculation & dampener deduplication | Resolved |
 
 ---
 
@@ -215,3 +216,23 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 - **Expected Impact:**
   - Eliminated the last >300 LOC file violation across the entire repository (0 files >300 LOC remaining).
   - Net metric reduction of 1 violation (11 -> 10).
+
+---
+
+### [PKG-03] Oversized `ScorePKGBUILD` in PKGBUILD Scorer
+
+- **File & Location:** `internal/triage/pkgbuild/scorer.go:13-95`
+- **Issue Category:** Spaghetti & Architecture
+- **Severity:** Medium
+- **Current State:**
+  `ScorePKGBUILD` was an 82 LOC routine mixing:
+  1. Trigger and dampener collection across both primary PKGBUILD analysis and optional `.install` scriptlet analysis.
+  2. Threat score calculation, category accumulation, score ceiling clamping (100), and verdict classification (`VerdictQuarantine`, `VerdictAlert`, `VerdictPass`).
+  3. Deduplication of applied dampeners and category sorting.
+  4. Scriptlet file loading in `TriagePKGBUILD` intermixed with nested error checks and non-deferred descriptor management.
+- **Refactored Code:**
+  - Decomposed `ScorePKGBUILD` into `collectAnalysisTriggers` (10 LOC), `calculateVerdict` (27 LOC), `deduplicateDampeners` (14 LOC), and a concise `ScorePKGBUILD` (32 LOC).
+  - Extracted `loadInstallScriptlet` (24 LOC) with structured `defer sf.Close()`.
+- **Expected Impact:**
+  - `ScorePKGBUILD` eliminated as >50 LOC violation.
+  - Net metric reduction of 1 violation (10 -> 9).
