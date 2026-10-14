@@ -68,7 +68,9 @@ func appendWordPart(sb *strings.Builder, part syntax.WordPart) {
 		}
 	case *syntax.ParamExp:
 		if p.Param != nil {
-			sb.WriteString("${" + p.Param.Value + "}")
+			sb.WriteString("${")
+			sb.WriteString(p.Param.Value)
+			sb.WriteByte('}')
 		}
 	case *syntax.CmdSubst:
 		sb.WriteString("$(cmd)")
