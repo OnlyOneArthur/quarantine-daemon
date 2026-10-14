@@ -59,23 +59,33 @@ func crossDeviceCopy(srcPath string, dev, ino uint64, destPath, vaultDir string)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = src.Close() }()
+	defer func() {
+		src.Close()
+	}()
 
 	if src.Dev != dev || src.Ino != ino {
 		return errors.New("source inode changed before cross-device copy")
 	}
 
+	if err := stageCrossDeviceFile(vaultDir, src.File, destPath); err != nil {
+		return err
+	}
+
+	return verifyAndUnlinkSource(srcPath, dev, ino, destPath)
+}
+
+func stageCrossDeviceFile(vaultDir string, src io.Reader, destPath string) error {
 	tmp, err := os.CreateTemp(vaultDir, ".tmp-move-*")
 	if err != nil {
 		return err
 	}
 	tmpPath := tmp.Name()
 	cleanup := func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
+		tmp.Close()
+		os.Remove(tmpPath)
 	}
 
-	if _, err := io.Copy(tmp, src.File); err != nil {
+	if _, err := io.Copy(tmp, src); err != nil {
 		cleanup()
 		return err
 	}
@@ -84,30 +94,33 @@ func crossDeviceCopy(srcPath string, dev, ino uint64, destPath, vaultDir string)
 		return err
 	}
 	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
+		os.Remove(tmpPath)
 		return err
 	}
 	if err := os.Chmod(tmpPath, 0600); err != nil {
-		_ = os.Remove(tmpPath)
+		os.Remove(tmpPath)
 		return err
 	}
 	if err := os.Rename(tmpPath, destPath); err != nil {
-		_ = os.Remove(tmpPath)
+		os.Remove(tmpPath)
 		return err
 	}
+	return nil
+}
 
+func verifyAndUnlinkSource(srcPath string, dev, ino uint64, destPath string) error {
 	match, err := fsutil.VerifyPathInodeMatch(srcPath, dev, ino)
 	if err != nil {
-		_ = os.Remove(destPath)
+		os.Remove(destPath)
 		return err
 	}
 	if !match {
-		_ = os.Remove(destPath)
+		os.Remove(destPath)
 		return errors.New("source inode changed during cross-device move")
 	}
 
 	if err := os.Remove(srcPath); err != nil {
-		_ = os.Remove(destPath)
+		os.Remove(destPath)
 		return err
 	}
 	return nil

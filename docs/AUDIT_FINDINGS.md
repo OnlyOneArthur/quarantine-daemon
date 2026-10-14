@@ -21,6 +21,7 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 | BIN-04 | `internal/triage/binary/pe.go:19-78` | Spaghetti & Architecture | Medium | 69 LOC `AnalyzePE` mixing section characteristic analysis, import inspection, and raw capability scans | Resolved |
 | IPC-02 | `internal/ipc/client.go:69-134` | Spaghetti & Architecture | Medium | 65 LOC `call` intermixing request preparation, redial/retry exchanges, and response parsing | Resolved |
 | IPC-03 | `internal/ipc/server.go:76-299` | Spaghetti & Architecture | High | 61 LOC `handleConn` + 59 LOC `Start` + connection pooling and lifecycle intermixed in `server.go` | Resolved |
+| QUA-02 | `internal/quarantine/move_posix.go:57-114` | Spaghetti & Architecture | Medium | 58 LOC `crossDeviceCopy` mixing safe file reading, staging, fsync, rename, inode verification, and unlinking | Resolved |
 
 ---
 
@@ -334,3 +335,20 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
   - `Start` eliminated as >50 LOC violation.
   - `internal/ipc/server.go` reduced from 299 LOC to 210 LOC.
   - Net metric reduction of 2 violations (5 -> 3).
+
+---
+
+### [QUA-02] Oversized `crossDeviceCopy` Routine in POSIX Move Implementation
+
+- **File & Location:** `internal/quarantine/move_posix.go:57-114`
+- **Issue Category:** Spaghetti & Architecture
+- **Severity:** Medium
+- **Current State:**
+  The `crossDeviceCopy` function (58 LOC) handled the cross-device (EXDEV) fallback relocation by intermixing source file descriptor opening & inode verification, temporary file creation, byte copying, fsyncing, permissions chmod (0600), destination atomic renaming, post-move source inode re-verification (anti-TOCTOU), and source deletion with rollback logic in a single procedure.
+- **Refactored Code:**
+  - Extracted temporary file copying and staging into `stageCrossDeviceFile` (28 LOC).
+  - Extracted post-move source inode re-verification and unlinking with rollback protection into `verifyAndUnlinkSource` (18 LOC).
+  - Streamlined `crossDeviceCopy` into a clear 19 LOC coordinator.
+- **Expected Impact:**
+  - `crossDeviceCopy` eliminated as >50 LOC violation.
+  - Net metric reduction of 1 violation (3 -> 2).
