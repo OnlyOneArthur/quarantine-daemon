@@ -1,3 +1,5 @@
+// Package watcher monitors configured root directories with fsnotify and emits
+// debounced file events for the scan pipeline.
 package watcher
 
 import (
@@ -108,14 +110,17 @@ func New(cfg Config) (*Watcher, error) {
 	return w, nil
 }
 
+// Events returns the channel of debounced file events.
 func (w *Watcher) Events() <-chan Event {
 	return w.events
 }
 
+// Errors returns the channel of watcher errors.
 func (w *Watcher) Errors() <-chan error {
 	return w.errors
 }
 
+// WatchedDirectories returns a snapshot of the directories currently watched.
 func (w *Watcher) WatchedDirectories() []string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -127,6 +132,8 @@ func (w *Watcher) WatchedDirectories() []string {
 	return dirs
 }
 
+// Close stops the watcher, joining its background goroutines and releasing
+// every inotify watch.
 func (w *Watcher) Close() error {
 	// Wake any sender waiting on a full channel before taking the mutex.
 	w.cancel()
@@ -154,6 +161,8 @@ func (w *Watcher) Close() error {
 	return err
 }
 
+// AddRoot starts watching path and its non-hidden descendants. It returns an
+// error if path does not exist.
 func (w *Watcher) AddRoot(path string) error {
 	cleanPath := filepath.Clean(path)
 
@@ -184,6 +193,14 @@ func (w *Watcher) AddRoot(path string) error {
 }
 
 func (w *Watcher) addRecursive(root string) error {
+	return w.walkTree(root, nil)
+}
+
+// walkTree watches every non-hidden directory under root and, when onFile is
+// non-nil, reports every non-directory entry. A single traversal serves both
+// directory registration and initial file scanning, avoiding a second full walk
+// of the same tree.
+func (w *Watcher) walkTree(root string, onFile func(string)) error {
 	info, err := os.Lstat(root)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -193,18 +210,26 @@ func (w *Watcher) addRecursive(root string) error {
 	}
 
 	if !info.IsDir() {
+		if onFile != nil {
+			onFile(filepath.Clean(root))
+		}
 		return w.watchDir(root)
 	}
 
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
-			return nil
+			// Skip entries that vanished or are unreadable rather than aborting
+			// the whole walk.
+			return nil //nolint:nilerr // intentional: skip unreadable entries
 		}
 		if d.IsDir() {
 			if strings.HasPrefix(d.Name(), ".") && path != root {
 				return filepath.SkipDir
 			}
 			return w.watchDir(path)
+		}
+		if onFile != nil {
+			onFile(filepath.Clean(path))
 		}
 		return nil
 	})
@@ -235,7 +260,12 @@ func (w *Watcher) watchDir(dir string) error {
 
 func (w *Watcher) unwatchDir(dir string) {
 	w.mu.Lock()
-	prefix := dir + string(filepath.Separator)
+	// filepath.Separator is already the final byte when dir is a filesystem
+	// root (e.g. "/"), so avoid producing a "//" prefix that matches nothing.
+	prefix := dir
+	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+		prefix += string(filepath.Separator)
+	}
 	toRemove := []string{dir}
 	delete(w.watchedDirs, dir)
 	for d := range w.watchedDirs {
@@ -297,21 +327,16 @@ func (w *Watcher) handleFsEvent(ev fsnotify.Event) {
 	if ev.Op&fsnotify.Create != 0 {
 		info, err := os.Lstat(cleanPath)
 		if err == nil && info.IsDir() {
-			if addErr := w.addRecursive(cleanPath); addErr != nil {
+			// Startup and reconcile walks deliberately skip hidden directories
+			// (.git, .cache, node_modules caches). A directory created at runtime
+			// must not bypass that filter and drag its whole tree into the scan
+			// pipeline.
+			if w.isHiddenNonRootDir(cleanPath) {
+				return
+			}
+			if addErr := w.walkTree(cleanPath, w.dispatchFileEvent); addErr != nil {
 				w.sendError(addErr)
 			}
-			_ = filepath.WalkDir(cleanPath, func(path string, d fs.DirEntry, err error) error {
-				if err != nil {
-					return nil
-				}
-				if d.IsDir() && path != cleanPath && strings.HasPrefix(d.Name(), ".") {
-					return filepath.SkipDir
-				}
-				if !d.IsDir() {
-					w.dispatchFileEvent(filepath.Clean(path))
-				}
-				return nil
-			})
 			return
 		}
 	}
@@ -325,6 +350,23 @@ func (w *Watcher) isIgnored(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	_, ignored := w.ignoreExts[ext]
 	return ignored
+}
+
+// isHiddenNonRootDir reports whether path is a hidden directory that is not an
+// explicitly configured watch root. Watch roots may legitimately be hidden
+// (e.g. ~/.config), so they are always allowed.
+func (w *Watcher) isHiddenNonRootDir(path string) bool {
+	if !strings.HasPrefix(filepath.Base(path), ".") {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, root := range w.roots {
+		if filepath.Clean(root) == path {
+			return false
+		}
+	}
+	return true
 }
 
 func (w *Watcher) isImmediate(path string) bool {
@@ -499,6 +541,8 @@ func (w *Watcher) reconcileLoop() {
 	}
 }
 
+// ReconcileWalk re-registers every configured root, recovering watches lost to
+// inotify limits or overflow events.
 func (w *Watcher) ReconcileWalk() error {
 	w.mu.Lock()
 	roots := append([]string(nil), w.roots...)
@@ -506,21 +550,9 @@ func (w *Watcher) ReconcileWalk() error {
 
 	for _, root := range roots {
 		cleanRoot := filepath.Clean(root)
-		if err := w.addRecursive(cleanRoot); err != nil {
+		if err := w.walkTree(cleanRoot, w.dispatchFileEvent); err != nil {
 			return fmt.Errorf("reconcile root %s: %w", cleanRoot, err)
 		}
-		_ = filepath.WalkDir(cleanRoot, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return nil
-			}
-			if d.IsDir() && path != cleanRoot && strings.HasPrefix(d.Name(), ".") {
-				return filepath.SkipDir
-			}
-			if !d.IsDir() {
-				w.dispatchFileEvent(filepath.Clean(path))
-			}
-			return nil
-		})
 	}
 	return nil
 }

@@ -2,12 +2,12 @@ package watcher
 
 import (
 	"os"
-
-	"github.com/fsnotify/fsnotify"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 func TestRecursiveWatcherSubdirRegistration(t *testing.T) {
@@ -410,5 +410,85 @@ func TestDirectoryMoveDispatchesNestedFiles(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("timed out waiting for event on moved directory nested file")
+	}
+}
+
+func TestRuntimeHiddenDirectoryIsNotWatchedOrScanned(t *testing.T) {
+	tempDir := t.TempDir()
+
+	w, err := New(Config{
+		Roots:         []string{tempDir},
+		DebounceDelay: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New watcher: %v", err)
+	}
+	defer w.Close()
+
+	// A directory created at runtime with a leading dot must be pruned exactly
+	// like the startup/reconcile walks prune it.
+	hiddenDir := filepath.Join(tempDir, ".cache")
+	if err := os.Mkdir(hiddenDir, 0755); err != nil {
+		t.Fatalf("mkdir hidden: %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+
+	watched := w.WatchedDirectories()
+	for _, d := range watched {
+		if d == hiddenDir {
+			t.Fatalf("hidden directory was watched: %v", watched)
+		}
+	}
+
+	// A file dropped inside it must not reach the scan pipeline.
+	if err := os.WriteFile(filepath.Join(hiddenDir, "payload.bin"), []byte("x"), 0644); err != nil {
+		t.Fatalf("write hidden file: %v", err)
+	}
+
+	select {
+	case ev := <-w.Events():
+		t.Fatalf("hidden directory file was dispatched: %s", ev.Path)
+	case <-time.After(400 * time.Millisecond):
+	}
+}
+
+func TestConfiguredHiddenWatchRootStillWatched(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, ".config")
+	if err := os.Mkdir(root, 0755); err != nil {
+		t.Fatalf("mkdir hidden root: %v", err)
+	}
+
+	w, err := New(Config{
+		Roots:         []string{root},
+		DebounceDelay: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("New watcher: %v", err)
+	}
+	defer w.Close()
+
+	watched := w.WatchedDirectories()
+	found := false
+	for _, d := range watched {
+		if d == root {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("configured hidden watch root was pruned: %v", watched)
+	}
+
+	file := filepath.Join(root, "payload.bin")
+	if err := os.WriteFile(file, []byte("x"), 0644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	select {
+	case ev := <-w.Events():
+		if ev.Path != file {
+			t.Fatalf("expected %s, got %s", file, ev.Path)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("configured hidden root file not dispatched")
 	}
 }
