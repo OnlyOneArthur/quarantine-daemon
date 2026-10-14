@@ -71,6 +71,60 @@ func TestQuarantineCrossDeviceEXDEV(t *testing.T) {
 	}
 }
 
+func TestRestoreRejectsUntrustedParent(t *testing.T) {
+	v, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+
+	srcPath := filepath.Join(t.TempDir(), "payload.bin")
+	writeFile(t, srcPath, []byte("payload"), 0644)
+	meta, err := v.QuarantineFile(srcPath, 93, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// World-writable, non-sticky parent: another user could swap the stage file.
+	unsafeDir := t.TempDir()
+	if err := os.Chmod(unsafeDir, 0777); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(unsafeDir, "restored.bin")
+	if err := v.Restore(meta.ID, dest); err == nil {
+		t.Fatal("expected restore into world-writable parent to fail")
+	}
+	if _, err := os.Lstat(dest); !os.IsNotExist(err) {
+		t.Errorf("unexpected destination created: %v", err)
+	}
+	if _, err := v.Inspect(meta.ID); err != nil {
+		t.Errorf("item lost after refusal: %v", err)
+	}
+}
+
+func TestRestoreMissingParentFails(t *testing.T) {
+	v, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+
+	srcPath := filepath.Join(t.TempDir(), "payload.bin")
+	writeFile(t, srcPath, []byte("payload"), 0644)
+	meta, err := v.QuarantineFile(srcPath, 93, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(t.TempDir(), "absent", "restored.bin")
+	if err := v.Restore(meta.ID, dest); err == nil {
+		t.Fatal("expected restore into missing parent to fail")
+	}
+	if _, err := v.Inspect(meta.ID); err != nil {
+		t.Errorf("item lost after refusal: %v", err)
+	}
+}
+
 func deviceID(t *testing.T, path string) uint64 {
 	t.Helper()
 	fi, err := os.Stat(path)

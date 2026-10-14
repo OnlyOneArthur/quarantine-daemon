@@ -124,8 +124,8 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 	return nil
 }
 
-// isIdempotent reports whether method is read-only and safe to resend after a
-// transport failure.
+// isIdempotent reports whether method is safe to resend after a transport failure.
+// AddWatchPath is a mutation, but the server deduplicates its normalized path.
 func isIdempotent(method string) bool {
 	switch method {
 	case MethodPing, MethodGetStatus, MethodListVault, MethodInspectItem, MethodAddWatchPath:

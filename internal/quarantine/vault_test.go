@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,6 +102,73 @@ func TestQuarantineFileNeutralizesArtifact(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].ID != meta.ID {
 		t.Errorf("List = %d items, want 1 (%s)", len(items), meta.ID)
+	}
+}
+
+func TestQuarantineRejectsDuplicateContentWithoutMovingSource(t *testing.T) {
+	v, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+
+	srcDir := t.TempDir()
+	first := filepath.Join(srcDir, "first.bin")
+	second := filepath.Join(srcDir, "second.bin")
+	content := []byte("same quarantined bytes")
+	writeFile(t, first, content, 0644)
+	writeFile(t, second, content, 0600)
+	original, err := v.QuarantineFile(first, 90, []string{"first"}, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeMeta, err := os.ReadFile(v.metaPath(original.ID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := v.artifactPath(original.ID)
+	beforeInfo, err := os.Lstat(artifact)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.QuarantineFile(second, 95, []string{"second"}, nil, nil); !errors.Is(err, ErrAlreadyQuarantined) {
+		t.Fatalf("duplicate quarantine = %v, want ErrAlreadyQuarantined", err)
+	}
+	if got, err := os.ReadFile(second); err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("second source changed: %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(v.metaPath(original.ID)); err != nil || !bytes.Equal(got, beforeMeta) {
+		t.Fatalf("original metadata changed: %q, %v", got, err)
+	}
+	afterInfo, err := os.Lstat(artifact)
+	if err != nil || !os.SameFile(beforeInfo, afterInfo) {
+		t.Fatalf("original artifact replaced: %v", err)
+	}
+	if mode := afterInfo.Mode().Perm(); mode != 0000 {
+		t.Fatalf("artifact permissions = %04o, want 0000", mode)
+	}
+}
+
+func TestQuarantineRejectsOrphanArtifactWithoutMovingSource(t *testing.T) {
+	v, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	src := filepath.Join(t.TempDir(), "source")
+	content := []byte("orphan")
+	writeFile(t, src, content, 0600)
+	sum := sha256.Sum256(content)
+	id := hex.EncodeToString(sum[:])
+	writeFile(t, v.artifactPath(id), []byte("existing artifact"), 0600)
+	if _, err := v.QuarantineFile(src, 90, nil, nil, nil); !errors.Is(err, ErrAlreadyQuarantined) {
+		t.Fatalf("orphan collision = %v, want ErrAlreadyQuarantined", err)
+	}
+	if got, err := os.ReadFile(src); err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("source changed: %q, %v", got, err)
+	}
+	if got, err := os.ReadFile(v.artifactPath(id)); err != nil || string(got) != "existing artifact" {
+		t.Fatalf("orphan artifact changed: %q, %v", got, err)
 	}
 }
 
@@ -217,6 +285,85 @@ func TestQuarantinePKGBUILDWritesBlockingStub(t *testing.T) {
 	}
 }
 
+func TestRestorePKGBUILDReplacesStub(t *testing.T) {
+	v, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	path := filepath.Join(t.TempDir(), "PKGBUILD")
+	original := []byte("pkgname=example\n")
+	writeFile(t, path, original, 0644)
+	meta, err := v.QuarantineFile(path, 95, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.Restore(meta.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("restored PKGBUILD: %q, %v", got, err)
+	}
+	if _, err := v.Inspect(meta.ID); !errors.Is(err, ErrItemNotFound) {
+		t.Fatalf("item remains after restore: %v", err)
+	}
+}
+
+func TestRestorePKGBUILDKeepsStubOnFailure(t *testing.T) {
+	v, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	path := filepath.Join(t.TempDir(), "PKGBUILD")
+	writeFile(t, path, []byte("pkgname=example\n"), 0644)
+	meta, err := v.QuarantineFile(path, 95, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Force staging failure while the stub is still present.
+	if err := os.Chmod(filepath.Dir(path), 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(filepath.Dir(path), 0700)
+	if err := v.Restore(meta.ID, ""); err == nil {
+		t.Fatal("expected stage failure")
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != stubBody {
+		t.Fatalf("stub lost: %q, %v", data, err)
+	}
+	if _, err := v.Inspect(meta.ID); err != nil {
+		t.Fatalf("artifact metadata lost: %v", err)
+	}
+	if mode := fileMode(t, v.artifactPath(meta.ID)); mode != 0000 {
+		t.Fatalf("artifact perms %04o, want 0000", mode)
+	}
+}
+
+func TestRestorePKGBUILDCollisionKeepsStubAndArtifact(t *testing.T) {
+	v, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	path := filepath.Join(t.TempDir(), "PKGBUILD")
+	writeFile(t, path, []byte("pkgname=example\n"), 0644)
+	meta, err := v.QuarantineFile(path, 95, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, path, []byte("user replacement"), 0600)
+	if err := v.Restore(meta.ID, ""); err == nil {
+		t.Fatal("expected destination collision")
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "user replacement" {
+		t.Fatalf("collision changed: %q, %v", data, err)
+	}
+	if _, err := v.Inspect(meta.ID); err != nil {
+		t.Fatalf("artifact metadata lost: %v", err)
+	}
+}
+
 func TestRestoreToOriginalPath(t *testing.T) {
 	vaultDir := t.TempDir()
 	srcDir := t.TempDir()
@@ -262,7 +409,7 @@ func TestRestoreToOriginalPath(t *testing.T) {
 	}
 }
 
-func TestQuarantinePreservesArtifactWhenMetadataWriteFails(t *testing.T) {
+func TestQuarantineRejectsExistingMetadataWithoutMovingSource(t *testing.T) {
 	vaultDir := t.TempDir()
 	srcDir := t.TempDir()
 	v, err := New(vaultDir)
@@ -277,24 +424,19 @@ func TestQuarantinePreservesArtifactWhenMetadataWriteFails(t *testing.T) {
 
 	sum := sha256.Sum256(content)
 	id := hex.EncodeToString(sum[:])
-	// Make the sidecar rename fail after the source has moved into the vault.
+	// A preexisting metadata path must reject before the source is moved.
 	if err := os.Mkdir(v.metaPath(id), 0700); err != nil {
 		t.Fatal(err)
 	}
 	_, err = v.QuarantineFile(srcPath, 90, nil, nil, nil)
-	if err == nil {
-		t.Fatal("expected metadata write failure")
+	if !errors.Is(err, ErrAlreadyQuarantined) {
+		t.Fatalf("metadata collision = %v, want ErrAlreadyQuarantined", err)
 	}
-	artifact := v.artifactPath(id)
-	if _, statErr := os.Stat(artifact); statErr != nil {
-		t.Fatalf("artifact was lost after failed quarantine: %v", statErr)
+	if got, err := os.ReadFile(srcPath); err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("source changed: %q, %v", got, err)
 	}
-	if err := os.Chmod(artifact, 0600); err != nil {
-		t.Fatal(err)
-	}
-	got, err := os.ReadFile(artifact)
-	if err != nil || !bytes.Equal(got, content) {
-		t.Fatalf("preserved artifact = %q, err %v", got, err)
+	if _, err := os.Lstat(v.artifactPath(id)); !os.IsNotExist(err) {
+		t.Fatalf("unexpected artifact after rejection: %v", err)
 	}
 }
 

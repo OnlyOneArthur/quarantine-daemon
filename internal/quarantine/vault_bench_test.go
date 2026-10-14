@@ -41,12 +41,10 @@ func BenchmarkVaultCheckSizeCap(b *testing.B) {
 
 	populateBenchmarkVault(b, v, 200)
 
-	testID := hex.EncodeToString(sha256.New().Sum([]byte("new-item")))
-
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if err := v.checkSizeCap(testID, 1024); err != nil {
+		if err := v.checkSizeCap(1024); err != nil {
 			b.Fatal(err)
 		}
 	}

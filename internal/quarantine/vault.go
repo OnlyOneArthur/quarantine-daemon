@@ -24,8 +24,9 @@ const (
 )
 
 var (
-	ErrItemNotFound  = errors.New("quarantine item not found")
-	ErrInvalidSource = errors.New("invalid source file")
+	ErrItemNotFound       = errors.New("quarantine item not found")
+	ErrInvalidSource      = errors.New("invalid source file")
+	ErrAlreadyQuarantined = errors.New("content already quarantined")
 )
 
 // ItemMetadata is the persisted sidecar describing a quarantined artifact.
@@ -153,7 +154,17 @@ func (v *Vault) QuarantineFile(srcPath string, score int, triggers []string, cat
 	}
 
 	err = v.withLock(func() error {
-		if err := v.checkSizeCap(hash, size); err != nil {
+		if _, err := os.Lstat(artifactPath); err == nil {
+			return ErrAlreadyQuarantined
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect existing artifact: %w", err)
+		}
+		if _, err := os.Lstat(v.metaPath(hash)); err == nil {
+			return ErrAlreadyQuarantined
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("inspect existing metadata: %w", err)
+		}
+		if err := v.checkSizeCap(size); err != nil {
 			return err
 		}
 		if err := moveFile(cleanSrc, dev, ino, artifactPath, v.dir); err != nil {
@@ -184,7 +195,7 @@ func (v *Vault) QuarantineFile(srcPath string, score int, triggers []string, cat
 
 // checkSizeCap counts artifacts (including orphaned ones) before moving the source.
 // Sidecars and the lock file are not quarantined payload bytes.
-func (v *Vault) checkSizeCap(id string, size int64) error {
+func (v *Vault) checkSizeCap(size int64) error {
 	if v.maxVaultSizeMB <= 0 || v.maxVaultSizeMB > math.MaxInt64/(1024*1024) {
 		return nil
 	}
@@ -196,8 +207,8 @@ func (v *Vault) checkSizeCap(id string, size int64) error {
 	var used int64
 	for _, entry := range entries {
 		name := entry.Name()
-		if len(name) != 64 || name == id {
-			continue // a matching hash replaces its existing artifact
+		if len(name) != 64 {
+			continue
 		}
 		if !isHex64(name) {
 			continue
@@ -322,11 +333,13 @@ func (v *Vault) Restore(id string, customDestPath string) error {
 			return fmt.Errorf("%w: artifact missing: %s", ErrItemNotFound, artifactPath)
 		}
 
-		if err := os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
-			return fmt.Errorf("create dest dir: %w", err)
+		// Refuse untrusted or missing parent directories. In a trusted directory,
+		// other users cannot replace a stage file or destination between checks.
+		if err := checkRestoreParent(filepath.Dir(dest)); err != nil {
+			return fmt.Errorf("restore destination parent: %w", err)
 		}
 
-		// Reject special files before reading a PKGBUILD stub or creating the destination.
+		var stub os.FileInfo
 		if fi, err := os.Lstat(dest); err == nil {
 			if fi.Mode()&os.ModeSymlink != 0 {
 				return fmt.Errorf("%w: destination is a symlink: %s", fsutil.ErrSymlinkNotAllowed, dest)
@@ -334,38 +347,35 @@ func (v *Vault) Restore(id string, customDestPath string) error {
 			if !fi.Mode().IsRegular() {
 				return fmt.Errorf("%w: destination: %s", fsutil.ErrNotRegularFile, dest)
 			}
-			if meta.IsPKGBUILD && fi.Size() == int64(len(stubBody)) {
-				data, rErr := os.ReadFile(dest)
-				if rErr == nil && string(data) == stubBody {
-					if err := os.Remove(dest); err != nil {
-						return fmt.Errorf("remove PKGBUILD stub: %w", err)
-					}
-				}
+			if !meta.IsPKGBUILD || dest != meta.OriginalPath || fi.Size() != int64(len(stubBody)) {
+				return fmt.Errorf("destination already exists: %s", dest)
 			}
+			sf, err := fsutil.OpenSafe(dest)
+			if err != nil {
+				return fmt.Errorf("inspect PKGBUILD stub: %w", err)
+			}
+			data, readErr := io.ReadAll(sf.File)
+			closeErr := sf.Close()
+			if readErr != nil || closeErr != nil || string(data) != stubBody {
+				return fmt.Errorf("destination is not the original PKGBUILD stub: %s", dest)
+			}
+			stub = fi
 		} else if !os.IsNotExist(err) {
 			return fmt.Errorf("inspect destination: %w", err)
 		}
 
-		dst, err := fsutil.OpenSafeCreate(dest, meta.OriginalMode)
+		dst, err := os.CreateTemp(filepath.Dir(dest), ".quarantine-restore-*")
 		if err != nil {
-			return fmt.Errorf("create destination: %w", err)
+			return fmt.Errorf("stage destination: %w", err)
 		}
+		stage := dst.Name()
+		defer func() { _ = dst.Close(); _ = os.Remove(stage) }()
 
-		// Temporarily elevate artifact permissions in vault (0400)
+		// Temporarily elevate artifact permissions in vault (0400).
 		if err := os.Chmod(artifactPath, 0400); err != nil {
-			_ = dst.Close()
-			_ = os.Remove(dest)
 			return fmt.Errorf("elevate artifact perms: %w", err)
 		}
-
-		restoreSuccess := false
-		defer func() {
-			if !restoreSuccess {
-				_ = neutralizePerms(artifactPath)
-				_ = dst.Close()
-				_ = os.Remove(dest)
-			}
-		}()
+		defer func() { _ = neutralizePerms(artifactPath) }()
 
 		src, err := fsutil.OpenSafe(artifactPath)
 		if err != nil {
@@ -378,22 +388,41 @@ func (v *Vault) Restore(id string, customDestPath string) error {
 		if err := src.Close(); err != nil {
 			return fmt.Errorf("close artifact: %w", err)
 		}
+		if err := os.Chtimes(stage, meta.ModTime, meta.ModTime); err != nil {
+			return fmt.Errorf("restore modtime: %w", err)
+		}
 		if err := dst.Sync(); err != nil {
-			return fmt.Errorf("sync destination: %w", err)
+			return fmt.Errorf("sync staged destination: %w", err)
+		}
+
+		if stub != nil {
+			fi, err := os.Lstat(dest)
+			if err != nil || !os.SameFile(stub, fi) {
+				return fmt.Errorf("PKGBUILD stub changed before restore: %s", dest)
+			}
+			if err := os.Rename(stage, dest); err != nil {
+				return fmt.Errorf("replace PKGBUILD stub: %w", err)
+			}
+		} else if err := os.Link(stage, dest); err != nil {
+			return fmt.Errorf("publish destination: %w", err)
+		}
+
+		// Keep the stage private until publication: the original mode might
+		// grant other users write access while the file is still being prepared.
+		if err := dst.Chmod(meta.OriginalMode); err != nil {
+			return fmt.Errorf("restore mode: %w", err)
+		}
+		if err := dst.Sync(); err != nil {
+			return fmt.Errorf("sync published destination: %w", err)
 		}
 		if err := dst.Close(); err != nil {
 			return fmt.Errorf("close destination: %w", err)
 		}
 
-		if err := os.Chmod(dest, meta.OriginalMode); err != nil {
-			return fmt.Errorf("restore mode: %w", err)
+		// Leave the original vault entry if removal fails after publication.
+		if err := neutralizePerms(artifactPath); err != nil {
+			return fmt.Errorf("neutralize restored artifact: %w", err)
 		}
-		if err := os.Chtimes(dest, meta.ModTime, meta.ModTime); err != nil {
-			return fmt.Errorf("restore modtime: %w", err)
-		}
-
-		restoreSuccess = true
-
 		if err := os.Remove(artifactPath); err != nil {
 			return fmt.Errorf("remove artifact: %w", err)
 		}
