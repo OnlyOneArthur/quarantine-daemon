@@ -198,25 +198,31 @@ func WalkScopeAncestors(file *syntax.File, isInstallScript bool, visitor func(no
 	if file == nil {
 		return
 	}
-
 	if isInstallScript {
-		var stack []syntax.Node
-		syntax.Walk(file, func(node syntax.Node) bool {
-			if node == nil {
-				if len(stack) > 0 {
-					stack = stack[:len(stack)-1]
-				}
-				return false
-			}
-			if !visitor(node, ScopeInstallScriptlet, stack) {
-				return false
-			}
-			stack = append(stack, node)
-			return true
-		})
+		walkInstallScriptAncestors(file, visitor)
 		return
 	}
+	walkPKGBUILDAncestors(file, visitor)
+}
 
+func walkInstallScriptAncestors(file *syntax.File, visitor func(node syntax.Node, scope string, ancestors []syntax.Node) bool) {
+	var stack []syntax.Node
+	syntax.Walk(file, func(node syntax.Node) bool {
+		if node == nil {
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+			return false
+		}
+		if !visitor(node, ScopeInstallScriptlet, stack) {
+			return false
+		}
+		stack = append(stack, node)
+		return true
+	})
+}
+
+func walkPKGBUILDAncestors(file *syntax.File, visitor func(node syntax.Node, scope string, ancestors []syntax.Node) bool) {
 	var stack []syntax.Node
 	funcDepth := 0
 

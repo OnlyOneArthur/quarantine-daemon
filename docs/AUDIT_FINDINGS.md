@@ -22,6 +22,7 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 | IPC-02 | `internal/ipc/client.go:69-134` | Spaghetti & Architecture | Medium | 65 LOC `call` intermixing request preparation, redial/retry exchanges, and response parsing | Resolved |
 | IPC-03 | `internal/ipc/server.go:76-299` | Spaghetti & Architecture | High | 61 LOC `handleConn` + 59 LOC `Start` + connection pooling and lifecycle intermixed in `server.go` | Resolved |
 | QUA-02 | `internal/quarantine/move_posix.go:57-114` | Spaghetti & Architecture | Medium | 58 LOC `crossDeviceCopy` mixing safe file reading, staging, fsync, rename, inode verification, and unlinking | Resolved |
+| PKG-05 | `internal/triage/pkgbuild/parser.go:197-251` | Spaghetti & Architecture | Low | 55 LOC `WalkScopeAncestors` intermixing install scriptlet AST traversal and PKGBUILD function-depth scope tracking | Resolved |
 
 ---
 
@@ -352,3 +353,20 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 - **Expected Impact:**
   - `crossDeviceCopy` eliminated as >50 LOC violation.
   - Net metric reduction of 1 violation (3 -> 2).
+
+---
+
+### [PKG-05] Oversized `WalkScopeAncestors` AST Traversal in PKGBUILD Parser
+
+- **File & Location:** `internal/triage/pkgbuild/parser.go:197-251`
+- **Issue Category:** Spaghetti & Architecture
+- **Severity:** Low
+- **Current State:**
+  `WalkScopeAncestors` (55 LOC) contained two distinct AST traversal implementations inside a single branching function: a simplified stack-tracking traversal for `.install` scriptlets and a function-depth-tracking traversal for PKGBUILD ASTs.
+- **Refactored Code:**
+  - Extracted `.install` scriptlet walk into `walkInstallScriptAncestors` (17 LOC).
+  - Extracted PKGBUILD function-depth walk into `walkPKGBUILDAncestors` (32 LOC).
+  - Streamlined `WalkScopeAncestors` into a 11 LOC dispatcher.
+- **Expected Impact:**
+  - `WalkScopeAncestors` eliminated as >50 LOC violation.
+  - Net metric reduction of 1 violation (2 -> 1).
