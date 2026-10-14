@@ -175,13 +175,11 @@ func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) moveWatchCursor(delta int) {
-	m.watchCursor += delta
-	if m.watchCursor < 0 {
+	if len(defaultWatchPresets) == 0 {
 		m.watchCursor = 0
+		return
 	}
-	if m.watchCursor >= len(defaultWatchPresets) {
-		m.watchCursor = len(defaultWatchPresets) - 1
-	}
+	m.watchCursor = min(len(defaultWatchPresets)-1, max(0, m.watchCursor+delta))
 }
 
 func (m *Model) openInspector() tea.Cmd {
@@ -229,12 +227,7 @@ func (m *Model) clampCursor() {
 		m.cursor, m.offset = 0, 0
 		return
 	}
-	if m.cursor < 0 {
-		m.cursor = 0
-	}
-	if m.cursor >= len(m.items) {
-		m.cursor = len(m.items) - 1
-	}
+	m.cursor = min(len(m.items)-1, max(0, m.cursor))
 	m.ensureVisible()
 }
 
