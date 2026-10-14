@@ -8,7 +8,9 @@ import (
 // Format represents the detected binary or script format.
 type Format string
 
+// Format values returned by DetectFormat.
 const (
+	// FormatUnknown means the magic bytes matched no known format.
 	FormatUnknown Format = "unknown"
 	FormatELF     Format = "elf"
 	FormatPE      Format = "pe"
@@ -64,7 +66,9 @@ func DetectFormat(data []byte) Format {
 	if data[0] == 'M' && data[1] == 'Z' {
 		if len(data) >= 0x40 {
 			peOffset := binary.LittleEndian.Uint32(data[0x3C:0x40])
-			if int(peOffset)+4 <= len(data) {
+			// Compare in uint64: on 32-bit platforms int(peOffset) would overflow
+			// for offsets above 0x7FFFFFFB and could panic on the slice below.
+			if uint64(peOffset)+4 <= uint64(len(data)) {
 				if bytes.Equal(data[peOffset:peOffset+4], []byte("PE\x00\x00")) {
 					return FormatPE
 				}

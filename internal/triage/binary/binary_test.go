@@ -1,3 +1,4 @@
+// Package binary triages native executables (ELF, PE, Mach-O) and scripts.
 package binary
 
 import (
@@ -12,6 +13,12 @@ import (
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
 )
 
+// writeLE writes data to buf in little-endian order. A bytes.Buffer never
+// fails, so the error is intentionally discarded.
+func writeLE(buf *bytes.Buffer, data any) {
+	_ = binary.Write(buf, binary.LittleEndian, data)
+}
+
 func buildMinimalELF64(phdrs []progHeader, shoff uint64, shnum uint16, payload []byte) []byte {
 	buf := new(bytes.Buffer)
 
@@ -20,30 +27,30 @@ func buildMinimalELF64(phdrs []progHeader, shoff uint64, shnum uint16, payload [
 	buf.Write(ident[:])
 
 	// Header fields
-	binary.Write(buf, binary.LittleEndian, uint16(2))          // e_type: ET_EXEC
-	binary.Write(buf, binary.LittleEndian, uint16(0x3e))       // e_machine: x86_64
-	binary.Write(buf, binary.LittleEndian, uint32(1))          // e_version: EV_CURRENT
-	binary.Write(buf, binary.LittleEndian, uint64(0x400000))   // e_entry
-	binary.Write(buf, binary.LittleEndian, uint64(64))         // e_phoff: 64
-	binary.Write(buf, binary.LittleEndian, shoff)              // e_shoff
-	binary.Write(buf, binary.LittleEndian, uint32(0))          // e_flags
-	binary.Write(buf, binary.LittleEndian, uint16(64))         // e_ehsize
-	binary.Write(buf, binary.LittleEndian, uint16(56))         // e_phentsize
-	binary.Write(buf, binary.LittleEndian, uint16(len(phdrs))) // e_phnum
-	binary.Write(buf, binary.LittleEndian, uint16(64))         // e_shentsize
-	binary.Write(buf, binary.LittleEndian, shnum)              // e_shnum
-	binary.Write(buf, binary.LittleEndian, uint16(0))          // e_shstrndx
+	writeLE(buf, uint16(2))          // e_type: ET_EXEC
+	writeLE(buf, uint16(0x3e))       // e_machine: x86_64
+	writeLE(buf, uint32(1))          // e_version: EV_CURRENT
+	writeLE(buf, uint64(0x400000))   // e_entry
+	writeLE(buf, uint64(64))         // e_phoff: 64
+	writeLE(buf, shoff)              // e_shoff
+	writeLE(buf, uint32(0))          // e_flags
+	writeLE(buf, uint16(64))         // e_ehsize
+	writeLE(buf, uint16(56))         // e_phentsize
+	writeLE(buf, uint16(len(phdrs))) // e_phnum
+	writeLE(buf, uint16(64))         // e_shentsize
+	writeLE(buf, shnum)              // e_shnum
+	writeLE(buf, uint16(0))          // e_shstrndx
 
 	// Program Headers
 	for _, ph := range phdrs {
-		binary.Write(buf, binary.LittleEndian, ph.pType)
-		binary.Write(buf, binary.LittleEndian, ph.pFlags)
-		binary.Write(buf, binary.LittleEndian, ph.pOffset)
-		binary.Write(buf, binary.LittleEndian, ph.pVaddr)
-		binary.Write(buf, binary.LittleEndian, ph.pPaddr)
-		binary.Write(buf, binary.LittleEndian, ph.pFilesz)
-		binary.Write(buf, binary.LittleEndian, ph.pMemsz)
-		binary.Write(buf, binary.LittleEndian, ph.pAlign)
+		writeLE(buf, ph.pType)
+		writeLE(buf, ph.pFlags)
+		writeLE(buf, ph.pOffset)
+		writeLE(buf, ph.pVaddr)
+		writeLE(buf, ph.pPaddr)
+		writeLE(buf, ph.pFilesz)
+		writeLE(buf, ph.pMemsz)
+		writeLE(buf, ph.pAlign)
 	}
 
 	if len(payload) > 0 {
@@ -103,7 +110,7 @@ func TestDetector(t *testing.T) {
 	}
 
 	// PE
-	peData := make([]byte, 128)
+	peData := make([]byte, 128, 128+len("PE\x00\x00padding"))
 	peData[0] = 'M'
 	peData[1] = 'Z'
 	binary.LittleEndian.PutUint32(peData[0x3C:0x40], 0x80)
@@ -403,28 +410,28 @@ func TestPETriage(t *testing.T) {
 // maximum protection and initial protection are set independently.
 func buildMachO64(segName string, maxprot, initprot uint32) []byte {
 	buf := new(bytes.Buffer)
-	buf.Write([]byte{0xcf, 0xfa, 0xed, 0xfe})                  // magic MH_MAGIC_64
-	binary.Write(buf, binary.LittleEndian, uint32(0x01000007)) // cputype x86_64
-	binary.Write(buf, binary.LittleEndian, uint32(3))          // cpusubtype
-	binary.Write(buf, binary.LittleEndian, uint32(2))          // filetype MH_EXECUTE
-	binary.Write(buf, binary.LittleEndian, uint32(1))          // ncmds
-	binary.Write(buf, binary.LittleEndian, uint32(72))         // sizeofcmds
-	binary.Write(buf, binary.LittleEndian, uint32(0))          // flags
-	binary.Write(buf, binary.LittleEndian, uint32(0))          // reserved
+	buf.Write([]byte{0xcf, 0xfa, 0xed, 0xfe}) // magic MH_MAGIC_64
+	writeLE(buf, uint32(0x01000007))          // cputype x86_64
+	writeLE(buf, uint32(3))                   // cpusubtype
+	writeLE(buf, uint32(2))                   // filetype MH_EXECUTE
+	writeLE(buf, uint32(1))                   // ncmds
+	writeLE(buf, uint32(72))                  // sizeofcmds
+	writeLE(buf, uint32(0))                   // flags
+	writeLE(buf, uint32(0))                   // reserved
 
-	binary.Write(buf, binary.LittleEndian, uint32(0x19)) // LC_SEGMENT_64
-	binary.Write(buf, binary.LittleEndian, uint32(72))   // cmdsize
+	writeLE(buf, uint32(0x19)) // LC_SEGMENT_64
+	writeLE(buf, uint32(72))   // cmdsize
 	name := make([]byte, 16)
 	copy(name, segName)
 	buf.Write(name)
-	binary.Write(buf, binary.LittleEndian, uint64(0)) // vmaddr
-	binary.Write(buf, binary.LittleEndian, uint64(0)) // vmsize
-	binary.Write(buf, binary.LittleEndian, uint64(0)) // fileoff
-	binary.Write(buf, binary.LittleEndian, uint64(0)) // filesize
-	binary.Write(buf, binary.LittleEndian, maxprot)
-	binary.Write(buf, binary.LittleEndian, initprot)
-	binary.Write(buf, binary.LittleEndian, uint32(0)) // nsects
-	binary.Write(buf, binary.LittleEndian, uint32(0)) // flags
+	writeLE(buf, uint64(0)) // vmaddr
+	writeLE(buf, uint64(0)) // vmsize
+	writeLE(buf, uint64(0)) // fileoff
+	writeLE(buf, uint64(0)) // filesize
+	writeLE(buf, maxprot)
+	writeLE(buf, initprot)
+	writeLE(buf, uint32(0)) // nsects
+	writeLE(buf, uint32(0)) // flags
 
 	return buf.Bytes()
 }
@@ -547,9 +554,9 @@ func TestIPv4ScannerMatchesPreviousRegexp(t *testing.T) {
 		for i := range data {
 			data[i] = alphabet[rng.Intn(len(alphabet))]
 		}
-		var got []string
+		got := make([]string, 0, 4)
 		forEachIPv4(data, 100, func(m []byte) { got = append(got, string(m)) })
-		var want []string
+		want := make([]string, 0, 4)
 		for _, m := range previous.FindAll(data, 100) {
 			want = append(want, string(m))
 		}

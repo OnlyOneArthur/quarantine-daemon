@@ -7,6 +7,7 @@ import (
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/entropy"
 )
 
+// PEAnalysis holds all findings from static analysis of a PE binary.
 type PEAnalysis struct {
 	TextEntropy            float64
 	HasRWXSections         bool
@@ -26,22 +27,22 @@ func AnalyzePE(data []byte) (*PEAnalysis, error) {
 
 	f, err := pe.NewFile(bytes.NewReader(data))
 	if err == nil {
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 
 		var fallbackEntropy float64
 		var hasFallback bool
 		var hasText bool
 		for _, sec := range f.Sections {
-			// Check for RWX sections: IMAGE_SCN_MEM_EXECUTE (0x20000000) & IMAGE_SCN_MEM_WRITE (0x80000000)
+			// Check for RWX sections: imageScnMemExecute (0x20000000) & imageScnMemWrite (0x80000000)
 			const (
-				IMAGE_SCN_MEM_EXECUTE = 0x20000000
-				IMAGE_SCN_MEM_WRITE   = 0x80000000
+				imageScnMemExecute = 0x20000000
+				imageScnMemWrite   = 0x80000000
 			)
-			if sec.Characteristics&IMAGE_SCN_MEM_EXECUTE != 0 && sec.Characteristics&IMAGE_SCN_MEM_WRITE != 0 {
+			if sec.Characteristics&imageScnMemExecute != 0 && sec.Characteristics&imageScnMemWrite != 0 {
 				analysis.HasRWXSections = true
 			}
 
-			if sec.Name == ".text" || sec.Characteristics&IMAGE_SCN_MEM_EXECUTE != 0 {
+			if sec.Name == ".text" || sec.Characteristics&imageScnMemExecute != 0 {
 				secData, err := sec.Data()
 				if err == nil && len(secData) > 0 {
 					if sec.Name == ".text" {

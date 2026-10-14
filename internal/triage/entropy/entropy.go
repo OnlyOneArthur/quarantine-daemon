@@ -1,3 +1,4 @@
+// Package entropy computes Shannon entropy over byte streams.
 package entropy
 
 import (

@@ -1,3 +1,4 @@
+// Package binary holds the triage benchmark suite.
 package binary
 
 import (

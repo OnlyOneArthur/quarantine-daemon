@@ -7,6 +7,7 @@ import (
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/entropy"
 )
 
+// MachOAnalysis holds all findings from static analysis of a Mach-O binary.
 type MachOAnalysis struct {
 	TextEntropy            float64
 	HasRWXSegments         bool
@@ -25,7 +26,7 @@ func AnalyzeMachO(data []byte) (*MachOAnalysis, error) {
 
 	f, err := macho.NewFile(bytes.NewReader(data))
 	if err == nil {
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 
 		for _, load := range f.Loads {
 			if seg, ok := load.(*macho.Segment); ok {

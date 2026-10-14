@@ -5,13 +5,13 @@ import (
 	"debug/elf"
 	"encoding/binary"
 	"errors"
-	"io"
 	"net"
 	"strings"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/entropy"
 )
 
+// ErrNotELF is returned when data does not contain a valid ELF image.
 var (
 	ErrNotELF       = errors.New("not an ELF binary")
 	ErrELFTruncated = errors.New("ELF binary truncated")
@@ -47,8 +47,8 @@ func AnalyzeELF(data []byte) (*ELFAnalysis, error) {
 	// 1. Try standard parsing via debug/elf
 	f, err := elf.NewFile(bytes.NewReader(data))
 	if err == nil {
-		defer f.Close()
-		analyzeWithDebugELF(f, analysis)
+		defer func() { _ = f.Close() }()
+		analyzeWithDebugELF(f, data, analysis)
 	}
 
 	// 2. Fallback check for raw headers if debug/elf did not find PT_LOAD
@@ -67,7 +67,7 @@ func AnalyzeELF(data []byte) (*ELFAnalysis, error) {
 	return analysis, nil
 }
 
-func analyzeWithDebugELF(f *elf.File, analysis *ELFAnalysis) {
+func analyzeWithDebugELF(f *elf.File, data []byte, analysis *ELFAnalysis) {
 	for _, prog := range f.Progs {
 		switch prog.Type {
 		case elf.PT_LOAD:
@@ -86,14 +86,22 @@ func analyzeWithDebugELF(f *elf.File, analysis *ELFAnalysis) {
 		}
 	}
 
-	// Calculate entropy strictly on .text section if present
+	// Calculate entropy strictly on .text section if present. Slice the already
+	// resident data buffer instead of copying the section through io.ReadAll,
+	// which would allocate up to 64MiB on every scan. Compressed sections are
+	// skipped because their on-disk bytes are not the real code.
 	sec := f.Section(".text")
-	if sec != nil && sec.Size > 0 {
-		analysis.TextSectionFound = true
-		r := io.LimitReader(sec.Open(), 64*1024*1024)
-		textData, err := io.ReadAll(r)
-		if err == nil && len(textData) > 0 {
-			analysis.TextEntropy = entropy.Calculate(textData)
+	if sec != nil && sec.Size > 0 && sec.Flags&elf.SHF_COMPRESSED == 0 {
+		const maxEntropyBytes = 64 * 1024 * 1024
+		start, end := sec.Offset, sec.Offset+sec.Size
+		if sec.Size > maxEntropyBytes {
+			end = start + maxEntropyBytes
+		}
+		if start < uint64(len(data)) && end >= start && end <= uint64(len(data)) {
+			analysis.TextSectionFound = true
+			if end > start {
+				analysis.TextEntropy = entropy.Calculate(data[start:end])
+			}
 		}
 	}
 
@@ -156,13 +164,13 @@ func checkCapabilityString(str string, analysis *ELFAnalysis) {
 	}
 }
 
-func addCapability(analysis *ELFAnalysis, cap string) {
+func addCapability(analysis *ELFAnalysis, capability string) {
 	for _, existing := range analysis.SuspiciousCapabilities {
-		if existing == cap {
+		if existing == capability {
 			return
 		}
 	}
-	analysis.SuspiciousCapabilities = append(analysis.SuspiciousCapabilities, cap)
+	analysis.SuspiciousCapabilities = append(analysis.SuspiciousCapabilities, capability)
 }
 
 func addIOC(analysis *ELFAnalysis, ioc string) {
@@ -217,7 +225,8 @@ func parseRawELFHeaders(data []byte, analysis *ELFAnalysis) error {
 				pFilesz := uint64(byteOrder.Uint32(data[off+16 : off+20]))
 				pFlags := byteOrder.Uint32(data[off+24 : off+28])
 
-				if pType == 1 { // PT_LOAD
+				switch pType {
+				case 1: // PT_LOAD
 					analysis.HasValidPTLoad = true
 
 					if pFlags&1 != 0 && !analysis.TextSectionFound { // PF_X
@@ -230,7 +239,7 @@ func parseRawELFHeaders(data []byte, analysis *ELFAnalysis) error {
 					if (pFlags & 3) == 3 { // PF_X | PF_W
 						analysis.HasRWXSegments = true
 					}
-				} else if pType == 0x6474e551 { // PT_GNU_STACK
+				case 0x6474e551: // PT_GNU_STACK
 					if pFlags&1 != 0 { // PF_X
 						analysis.HasExecutableStack = true
 					}
@@ -269,7 +278,8 @@ func parseRawELFHeaders(data []byte, analysis *ELFAnalysis) error {
 				pOffset := byteOrder.Uint64(data[off+8 : off+16])
 				pFilesz := byteOrder.Uint64(data[off+32 : off+40])
 
-				if pType == 1 { // PT_LOAD
+				switch pType {
+				case 1: // PT_LOAD
 					analysis.HasValidPTLoad = true
 
 					if pFlags&1 != 0 && !analysis.TextSectionFound { // PF_X
@@ -282,7 +292,7 @@ func parseRawELFHeaders(data []byte, analysis *ELFAnalysis) error {
 					if (pFlags & 3) == 3 { // PF_X | PF_W
 						analysis.HasRWXSegments = true
 					}
-				} else if pType == 0x6474e551 { // PT_GNU_STACK
+				case 0x6474e551: // PT_GNU_STACK
 					if pFlags&1 != 0 { // PF_X
 						analysis.HasExecutableStack = true
 					}
