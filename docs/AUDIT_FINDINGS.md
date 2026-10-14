@@ -12,6 +12,7 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 | BIN-02 | `internal/triage/binary/elf.go:84-308` | Spaghetti & Architecture | High | Oversized 109 LOC `parseRawELFHeaders` & 77 LOC `analyzeWithDebugELF` + 439 LOC file | Resolved |
 | QUA-01 | `internal/quarantine/vault.go:124-500` | Spaghetti & Architecture | High | 628 LOC file + 101 LOC `QuarantineFile`, 117 LOC `Restore`, 56 LOC `Sweep` | Resolved |
 | TUI-01 | `internal/tui/model.go:390-666` | Spaghetti & Architecture | High | 842 LOC file + 115 LOC `update`, 97 LOC `handleKey` | Resolved |
+| TUI-02 | `internal/tui/view.go:207-670` | Spaghetti & Architecture | High | 729 LOC file + 67 LOC `renderWatchPane` | Resolved |
 
 ---
 
@@ -150,3 +151,22 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
   - `handleKey` eliminated as >50 LOC violation.
   - `internal/tui/model.go` line count dropped from 842 LOC to 227 LOC (<=300 LOC limit).
   - Net metric reduction of 3 violations (20 -> 17).
+
+---
+
+### [TUI-02] Oversized View Rendering, Pane Layout & Watch Target View
+
+- **File & Location:** `internal/tui/view.go:207-670`
+- **Issue Category:** Spaghetti & Architecture
+- **Severity:** High
+- **Current State:**
+  `internal/tui/view.go` was 729 LOC combining central terminal chrome layout, adaptive lipgloss theme definitions, confirmation modals, dashboard rendering, vault table rendering with columnar cell formatting, inspector metadata display, watch target presets with dynamic active status badges, and 67 LOC `renderWatchPane`.
+- **Refactored Code:**
+  - Extracted dashboard, vault table, inspector metadata display, and connection offline frames into `internal/tui/view_panes.go` (268 LOC).
+  - Extracted watch targets preset table and directory monitor guide into `internal/tui/view_watch.go` (100 LOC), decomposing `renderWatchPane` from 67 LOC into modular subroutines (`renderWatchActive`, `renderWatchPresets`, `renderWatchGuide`), each <= 27 LOC.
+  - Extracted path truncation, cell alignment, uptime formatting, and line clamping into `internal/tui/view_layout.go` (103 LOC).
+  - Reduced `internal/tui/view.go` from 729 LOC to 293 LOC (<= 300 LOC limit).
+- **Expected Impact:**
+  - `renderWatchPane` eliminated as >50 LOC violation.
+  - `internal/tui/view.go` line count dropped from 729 LOC to 293 LOC (<= 300 LOC limit).
+  - Net metric reduction of 2 violations (17 -> 15).
