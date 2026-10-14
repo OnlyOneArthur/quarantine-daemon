@@ -57,6 +57,32 @@ vault_dir = ""
 	}
 }
 
+func TestLoadConfig_RejectsOutOfRangeValues(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"threshold above 100", "[quarantine]\nthreshold_score = 200\n"},
+		{"negative threshold", "[quarantine]\nthreshold_score = -1\n"},
+		{"negative vault size", "[quarantine]\nmax_vault_size_mb = -5\n"},
+		{"negative retention", "[quarantine]\nretention_days = -1\n"},
+		{"zero poll interval", "[service]\npoll_interval_ms = 0\n"},
+		{"zero scan size", "[triage_binary]\nmax_scan_size_mb = 0\n"},
+		{"entropy above 8", "[triage_binary]\nentropy_threshold = 9.5\n"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfgPath := filepath.Join(t.TempDir(), "config.toml")
+			if err := os.WriteFile(cfgPath, []byte(tc.body), 0600); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			if _, err := Load(cfgPath); err == nil {
+				t.Fatalf("Load accepted invalid config: %s", tc.body)
+			}
+		})
+	}
+}
+
 func TestLoadConfig(t *testing.T) {
 	tmpDir := t.TempDir()
 	cfgPath := filepath.Join(tmpDir, "config.toml")

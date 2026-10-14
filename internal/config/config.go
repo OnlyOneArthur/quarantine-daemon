@@ -1,3 +1,4 @@
+// Package config loads and validates the quarantined daemon TOML configuration.
 package config
 
 import (
@@ -9,6 +10,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
+// Config is the root configuration document.
 type Config struct {
 	Service    ServiceConfig    `toml:"service"`
 	Paths      PathsConfig      `toml:"paths"`
@@ -17,29 +19,34 @@ type Config struct {
 	Quarantine QuarantineConfig `toml:"quarantine"`
 }
 
+// ServiceConfig controls logging and the IPC socket.
 type ServiceConfig struct {
 	LogLevel       string `toml:"log_level"`
 	PollIntervalMs int    `toml:"poll_interval_ms"`
 	SocketPath     string `toml:"socket_path"`
 }
 
+// PathsConfig lists the directories to watch and extensions to ignore.
 type PathsConfig struct {
 	Watch            []string `toml:"watch"`
 	IgnoreExtensions []string `toml:"ignore_extensions"`
 }
 
+// BinaryConfig tunes native-binary triage.
 type BinaryConfig struct {
 	Enabled          bool    `toml:"enabled"`
 	EntropyThreshold float64 `toml:"entropy_threshold"`
 	MaxScanSizeMB    int64   `toml:"max_scan_size_mb"`
 }
 
+// PKGBUILDConfig tunes PKGBUILD and install-scriptlet triage.
 type PKGBUILDConfig struct {
 	Enabled               bool `toml:"enabled"`
 	BlockUntrustedSources bool `toml:"block_untrusted_sources"`
 	FlagSkipChecksums     bool `toml:"flag_skip_checksums"`
 }
 
+// QuarantineConfig controls the vault directory and retention policy.
 type QuarantineConfig struct {
 	VaultDir       string `toml:"vault_dir"`
 	ThresholdScore int    `toml:"threshold_score"`
@@ -61,6 +68,7 @@ func ExpandHome(path string) string {
 	return filepath.Clean(path)
 }
 
+// DefaultConfig returns the built-in defaults, rooted at the user's home.
 func DefaultConfig() *Config {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -153,6 +161,33 @@ func Load(path string) (*Config, error) {
 	if cfg.Quarantine.VaultDir == "" || cfg.Service.SocketPath == "" {
 		return nil, fmt.Errorf("vault_dir and socket_path must not be empty")
 	}
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
 
 	return cfg, nil
+}
+
+// validate rejects out-of-range values that would silently disable a subsystem
+// (for example a threshold_score above 100 makes VerdictQuarantine unreachable).
+func (c *Config) validate() error {
+	if c.Quarantine.ThresholdScore < 0 || c.Quarantine.ThresholdScore > 100 {
+		return fmt.Errorf("quarantine.threshold_score must be between 0 and 100, got %d", c.Quarantine.ThresholdScore)
+	}
+	if c.Quarantine.MaxVaultSizeMB < 0 {
+		return fmt.Errorf("quarantine.max_vault_size_mb must not be negative, got %d", c.Quarantine.MaxVaultSizeMB)
+	}
+	if c.Quarantine.RetentionDays < 0 {
+		return fmt.Errorf("quarantine.retention_days must not be negative, got %d", c.Quarantine.RetentionDays)
+	}
+	if c.Service.PollIntervalMs <= 0 {
+		return fmt.Errorf("service.poll_interval_ms must be positive, got %d", c.Service.PollIntervalMs)
+	}
+	if c.Binary.MaxScanSizeMB <= 0 {
+		return fmt.Errorf("triage_binary.max_scan_size_mb must be positive, got %d", c.Binary.MaxScanSizeMB)
+	}
+	if c.Binary.EntropyThreshold < 0 || c.Binary.EntropyThreshold > 8 {
+		return fmt.Errorf("triage_binary.entropy_threshold must be between 0 and 8, got %g", c.Binary.EntropyThreshold)
+	}
+	return nil
 }
