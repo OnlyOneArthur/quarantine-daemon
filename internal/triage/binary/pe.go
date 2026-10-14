@@ -17,62 +17,73 @@ type PEAnalysis struct {
 
 // AnalyzePE analyzes a Windows PE binary using Go standard library debug/pe.
 func AnalyzePE(data []byte) (*PEAnalysis, error) {
-	analysis := &PEAnalysis{}
-
-	// Check UPX marker
-	if bytes.Contains(data, []byte("UPX!")) {
-		analysis.HasUPX = true
+	analysis := &PEAnalysis{
+		HasUPX: bytes.Contains(data, []byte("UPX!")),
 	}
 
 	f, err := pe.NewFile(bytes.NewReader(data))
 	if err == nil {
-		defer func() { _ = f.Close() }()
-
-		var fallbackEntropy float64
-		var hasFallback bool
-		var hasText bool
-		for _, sec := range f.Sections {
-			// Check for RWX sections: imageScnMemExecute (0x20000000) & imageScnMemWrite (0x80000000)
-			const (
-				imageScnMemExecute = 0x20000000
-				imageScnMemWrite   = 0x80000000
-			)
-			if sec.Characteristics&imageScnMemExecute != 0 && sec.Characteristics&imageScnMemWrite != 0 {
-				analysis.HasRWXSections = true
-			}
-
-			if sec.Name == ".text" || sec.Characteristics&imageScnMemExecute != 0 {
-				secData, err := sec.Data()
-				if err == nil && len(secData) > 0 {
-					if sec.Name == ".text" {
-						analysis.TextEntropy = CalculateEntropy(secData)
-						hasText = true
-					} else if !hasFallback {
-						fallbackEntropy = CalculateEntropy(secData)
-						hasFallback = true
-					}
-				}
-			}
-		}
-		if !hasText && hasFallback {
-			analysis.TextEntropy = fallbackEntropy
-		}
-
-		// Check imported symbols
-		symbols, err := f.ImportedSymbols()
-		if err == nil {
-			for _, sym := range symbols {
-				switch sym {
-				case "VirtualAllocEx", "WriteProcessMemory", "CreateRemoteThread", "QueueUserAPC":
-					analysis.SuspiciousCapabilities = append(analysis.SuspiciousCapabilities, sym)
-				}
-			}
-		}
+		defer func() {
+			f.Close()
+		}()
+		inspectPESections(f.Sections, analysis)
+		inspectPEImports(f, analysis)
 	} else {
 		// Fallback for truncated/corrupted PE headers
 		analysis.TextEntropy = CalculateEntropy(data)
 	}
 
+	appendRawPECapabilities(data, analysis)
+	analysis.SuspiciousIOCs = scanRawIOCs(data)
+
+	return analysis, nil
+}
+
+func inspectPESections(sections []*pe.Section, analysis *PEAnalysis) {
+	const (
+		imageScnMemExecute = 0x20000000
+		imageScnMemWrite   = 0x80000000
+	)
+	var fallbackEntropy float64
+	var hasFallback, hasText bool
+
+	for _, sec := range sections {
+		if sec.Characteristics&imageScnMemExecute != 0 && sec.Characteristics&imageScnMemWrite != 0 {
+			analysis.HasRWXSections = true
+		}
+
+		if sec.Name == ".text" || sec.Characteristics&imageScnMemExecute != 0 {
+			secData, err := sec.Data()
+			if err == nil && len(secData) > 0 {
+				if sec.Name == ".text" {
+					analysis.TextEntropy = CalculateEntropy(secData)
+					hasText = true
+				} else if !hasFallback {
+					fallbackEntropy = CalculateEntropy(secData)
+					hasFallback = true
+				}
+			}
+		}
+	}
+	if !hasText && hasFallback {
+		analysis.TextEntropy = fallbackEntropy
+	}
+}
+
+func inspectPEImports(f *pe.File, analysis *PEAnalysis) {
+	symbols, err := f.ImportedSymbols()
+	if err != nil {
+		return
+	}
+	for _, sym := range symbols {
+		switch sym {
+		case "VirtualAllocEx", "WriteProcessMemory", "CreateRemoteThread", "QueueUserAPC":
+			analysis.SuspiciousCapabilities = append(analysis.SuspiciousCapabilities, sym)
+		}
+	}
+}
+
+func appendRawPECapabilities(data []byte, analysis *PEAnalysis) {
 	for i, c := range capBytes {
 		if bytes.Contains(data, c) {
 			capability := capStrings[i]
@@ -81,7 +92,4 @@ func AnalyzePE(data []byte) (*PEAnalysis, error) {
 			}
 		}
 	}
-	analysis.SuspiciousIOCs = scanRawIOCs(data)
-
-	return analysis, nil
 }

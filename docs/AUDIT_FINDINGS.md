@@ -18,6 +18,7 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 | PKG-03 | `internal/triage/pkgbuild/scorer.go:13-95` | Spaghetti & Architecture | Medium | 82 LOC `ScorePKGBUILD` mixing trigger collection, score/verdict calculation & dampener deduplication | Resolved |
 | PKG-04 | `internal/triage/pkgbuild/dampeners.go:35-107` | Spaghetti & Architecture | Medium | 71 LOC `EvaluateIntegrity` intermixing VCS exemptions, missing checksum checks & inline SKIP closures | Resolved |
 | BIN-03 | `internal/triage/binary/detector.go:22-87` | Spaghetti & Architecture | Medium | 65 LOC `DetectFormat` intermixing script shebang, ELF, Mach-O universal, and PE header parsing | Resolved |
+| BIN-04 | `internal/triage/binary/pe.go:19-78` | Spaghetti & Architecture | Medium | 69 LOC `AnalyzePE` mixing section characteristic analysis, import inspection, and raw capability scans | Resolved |
 
 ---
 
@@ -273,3 +274,21 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 - **Expected Impact:**
   - `DetectFormat` eliminated as >50 LOC violation.
   - Net metric reduction of 1 violation (8 -> 7).
+
+---
+
+### [BIN-04] Oversized `AnalyzePE` in Windows PE Analyzer
+
+- **File & Location:** `internal/triage/binary/pe.go:19-78`
+- **Issue Category:** Spaghetti & Architecture
+- **Severity:** Medium
+- **Current State:**
+  `AnalyzePE` was a 69 LOC routine handling UPX string verification, PE file instantiation, RWX section bitmasking, .text vs fallback entropy calculation, imported injection symbol inspection, capability slice scanning, and IOC scanning in a single long function.
+- **Refactored Code:**
+  - Decomposed section analysis into `inspectPESections` (29 LOC) with explicit RWX characteristic bitmasking and fallback entropy.
+  - Decomposed symbol imports into `inspectPEImports` (12 LOC) detecting process injection APIs (`VirtualAllocEx`, `WriteProcessMemory`, etc.).
+  - Extracted raw capability pattern scanning into `appendRawPECapabilities` (10 LOC).
+  - Streamlined `AnalyzePE` into a 19-line coordinator.
+- **Expected Impact:**
+  - `AnalyzePE` eliminated as >50 LOC violation.
+  - Net metric reduction of 1 violation (7 -> 6).
