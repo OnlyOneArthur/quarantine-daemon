@@ -1,12 +1,9 @@
 package ipc
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -78,15 +75,9 @@ func (s *Server) Start(ctx context.Context) error {
 		return err
 	}
 
-	ln, err := net.Listen("unix", s.socketPath)
+	ln, err := s.createListener()
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", s.socketPath, err)
-	}
-
-	if err := os.Chmod(s.socketPath, 0600); err != nil {
-		_ = ln.Close()
-		_ = os.Remove(s.socketPath)
-		return fmt.Errorf("chmod socket 0600: %w", err)
+		return err
 	}
 
 	// Stop may have run while Listen was in progress; in that case it saw no
@@ -113,7 +104,24 @@ func (s *Server) Start(ctx context.Context) error {
 	}()
 
 	defer s.wg.Done()
+	return s.acceptLoop(ln)
+}
 
+func (s *Server) createListener() (net.Listener, error) {
+	ln, err := net.Listen("unix", s.socketPath)
+	if err != nil {
+		return nil, fmt.Errorf("listen on %s: %w", s.socketPath, err)
+	}
+
+	if err := os.Chmod(s.socketPath, 0600); err != nil {
+		_ = ln.Close()
+		_ = os.Remove(s.socketPath)
+		return nil, fmt.Errorf("chmod socket 0600: %w", err)
+	}
+	return ln, nil
+}
+
+func (s *Server) acceptLoop(ln net.Listener) error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -199,101 +207,4 @@ func (s *Server) Stop() error {
 		}
 	})
 	return stopErr
-}
-
-func (s *Server) trackConn(c net.Conn) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		_ = c.Close()
-		return false
-	}
-	s.conns[c] = struct{}{}
-	s.wg.Add(1)
-	return true
-}
-
-func (s *Server) untrackConn(c net.Conn) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	delete(s.conns, c)
-}
-
-func (s *Server) handleConn(conn net.Conn) {
-	defer func() {
-		s.untrackConn(conn)
-		_ = conn.Close()
-		s.wg.Done()
-	}()
-
-	clientUID, err := peerCred(conn)
-	if err != nil {
-		s.writeError(conn, "", "AUTH_ERROR", err.Error())
-		return
-	}
-	if clientUID != uint32(os.Getuid()) {
-		s.writeError(conn, "", "UNAUTHORIZED", ErrUnauthorized.Error())
-		return
-	}
-
-	scanner := bufio.NewScanner(conn)
-	// Support messages up to 10MB (for large vault item listings)
-	buf := make([]byte, 64*1024)
-	scanner.Buffer(buf, 10*1024*1024)
-
-	for {
-		_ = conn.SetReadDeadline(time.Now().Add(connReadTimeout))
-		if !scanner.Scan() {
-			break
-		}
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-
-		var req Request
-		if err := json.Unmarshal(line, &req); err != nil {
-			s.writeError(conn, "", "INVALID_REQUEST", fmt.Sprintf("invalid JSON payload: %v", err))
-			return
-		}
-
-		resp := s.dispatch(&req)
-		data, err := json.Marshal(resp)
-		if err != nil {
-			s.writeError(conn, req.ID, "INTERNAL_ERROR", "failed to marshal response")
-			return
-		}
-		data = append(data, '\n')
-		_ = conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
-		if _, err := conn.Write(data); err != nil {
-			return
-		}
-	}
-
-	// EOF and closed connections end the scan with a nil error; an idle timeout
-	// is a normal hang-up, while anything else (e.g. a line over the buffer
-	// limit) is reported to the client.
-	if err := scanner.Err(); err != nil {
-		if errors.Is(err, os.ErrDeadlineExceeded) {
-			return
-		}
-		s.writeError(conn, "", "INVALID_REQUEST", err.Error())
-	}
-}
-
-// Connection deadlines bound a single misbehaving client: without them a
-// stalled peer would pin a handler goroutine and its file descriptor forever.
-const (
-	connReadTimeout  = 5 * time.Minute
-	connWriteTimeout = 30 * time.Second
-)
-
-func (s *Server) writeError(w io.Writer, id, code, msg string) {
-	resp := Response{
-		ID:    id,
-		Error: &RPCError{Code: code, Message: msg},
-	}
-	data, _ := json.Marshal(resp)
-	data = append(data, '\n')
-	_, _ = w.Write(data)
 }

@@ -20,6 +20,7 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 | BIN-03 | `internal/triage/binary/detector.go:22-87` | Spaghetti & Architecture | Medium | 65 LOC `DetectFormat` intermixing script shebang, ELF, Mach-O universal, and PE header parsing | Resolved |
 | BIN-04 | `internal/triage/binary/pe.go:19-78` | Spaghetti & Architecture | Medium | 69 LOC `AnalyzePE` mixing section characteristic analysis, import inspection, and raw capability scans | Resolved |
 | IPC-02 | `internal/ipc/client.go:69-134` | Spaghetti & Architecture | Medium | 65 LOC `call` intermixing request preparation, redial/retry exchanges, and response parsing | Resolved |
+| IPC-03 | `internal/ipc/server.go:76-299` | Spaghetti & Architecture | High | 61 LOC `handleConn` + 59 LOC `Start` + connection pooling and lifecycle intermixed in `server.go` | Resolved |
 
 ---
 
@@ -311,3 +312,25 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 - **Expected Impact:**
   - `call` eliminated as >50 LOC violation.
   - Net metric reduction of 1 violation (6 -> 5).
+
+---
+
+### [IPC-03] Oversized `handleConn` & `Start` Lifecycle Routines in IPC Server
+
+- **File & Location:** `internal/ipc/server.go:76-299`
+- **Issue Category:** Spaghetti & Architecture
+- **Severity:** High
+- **Current State:**
+  `internal/ipc/server.go` combined server configuration with:
+  1. `handleConn` (61 LOC): peer UID authentication, 10MB scanner buffer setup, read deadline enforcement, request JSON decoding, dispatch execution, response serialization, write deadline enforcement, and scanner error recovery.
+  2. `Start` (59 LOC): stale socket detection, UNIX socket listener creation, permission chmod (0600), context-driven shutdown goroutine, and connection acceptance loop.
+  3. Connection tracking (`trackConn`, `untrackConn`) and write error formatting (`writeError`).
+- **Refactored Code:**
+  - Extracted connection lifecycle into `internal/ipc/conn.go` (117 LOC), decomposing `handleConn` into `authenticateConn` (12 LOC), `processRequest` (17 LOC), and a streamlined `handleConn` loop (34 LOC).
+  - Modularized `Start` in `internal/ipc/server.go` by extracting `createListener` (14 LOC) and `acceptLoop` (18 LOC), reducing `Start` to 30 LOC.
+  - Reduced `internal/ipc/server.go` from 299 LOC to 210 LOC (<= 300 LOC limit).
+- **Expected Impact:**
+  - `handleConn` eliminated as >50 LOC violation.
+  - `Start` eliminated as >50 LOC violation.
+  - `internal/ipc/server.go` reduced from 299 LOC to 210 LOC.
+  - Net metric reduction of 2 violations (5 -> 3).
