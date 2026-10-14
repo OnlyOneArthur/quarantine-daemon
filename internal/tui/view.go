@@ -129,14 +129,7 @@ func (m *Model) boxWidth(limit int) int {
 	if m.width <= 0 {
 		return limit
 	}
-	w := m.width - 4
-	if w > limit {
-		w = limit
-	}
-	if w < 8 {
-		w = 8
-	}
-	return w
+	return max(8, min(limit, m.width-4))
 }
 
 func (m *Model) renderPane() string {
@@ -185,7 +178,7 @@ func (m *Model) connectionBadge() string {
 
 func (m *Model) renderTabs() string {
 	tabs := make([]string, 0, paneCount)
-	for p := paneDashboard; p < paneCount; p++ {
+	for p := range paneCount {
 		label := fmt.Sprintf("%d %s", int(p)+1, p.String())
 		if p == m.pane {
 			tabs = append(tabs, activeTabStyle.Render(label))
