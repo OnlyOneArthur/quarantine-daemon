@@ -226,7 +226,7 @@ func TestSweepPurgesExpiredItems(t *testing.T) {
 	if err := v.Sweep(); err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
-	if _, err := v.Inspect(oldItem.ID); err != ErrItemNotFound {
+	if _, err := v.Inspect(oldItem.ID); !errors.Is(err, ErrItemNotFound) {
 		t.Errorf("expired metadata still present: %v", err)
 	}
 	if _, err := os.Stat(v.artifactPath(oldItem.ID)); !os.IsNotExist(err) {
@@ -234,6 +234,91 @@ func TestSweepPurgesExpiredItems(t *testing.T) {
 	}
 	if _, err := v.Inspect(newItem.ID); err != nil {
 		t.Errorf("unexpired item removed: %v", err)
+	}
+}
+
+func TestRollbackArtifactRestoresSource(t *testing.T) {
+	vaultDir := t.TempDir()
+	srcDir := t.TempDir()
+	src := filepath.Join(srcDir, "payload.bin")
+	content := []byte("rollback me")
+	writeFile(t, src, content, 0640)
+
+	v, err := New(vaultDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+
+	id := strings.Repeat("a", 64)
+	artifact := v.artifactPath(id)
+	if err := os.Rename(src, artifact); err != nil {
+		t.Fatal(err)
+	}
+	if err := neutralizePerms(artifact); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rollbackArtifact(artifact, src, 0640); err != nil {
+		t.Fatalf("rollbackArtifact: %v", err)
+	}
+	got, err := os.ReadFile(src)
+	if err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("restored content = %q, error=%v", got, err)
+	}
+	if mode := fileMode(t, src); mode != 0640 {
+		t.Errorf("restored mode = %o, want 640", mode)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Errorf("artifact still in vault after rollback: %v", err)
+	}
+}
+
+func TestSweepRemovesOrphanedArtifacts(t *testing.T) {
+	v, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	v.SetLimits(0, 14)
+
+	// A managed item must survive the orphan sweep.
+	srcDir := t.TempDir()
+	managed := filepath.Join(srcDir, "managed.bin")
+	writeFile(t, managed, []byte("managed"), 0644)
+	item, err := v.QuarantineFile(managed, 90, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// An artifact with no sidecar, aged past retention, is invisible to every
+	// other operation and must be reclaimed.
+	oldOrphan := strings.Repeat("b", 64)
+	if err := os.WriteFile(v.artifactPath(oldOrphan), []byte("orphan"), 0000); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().AddDate(0, 0, -30)
+	if err := os.Chtimes(v.artifactPath(oldOrphan), old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh orphan is left alone until it ages out.
+	newOrphan := strings.Repeat("c", 64)
+	if err := os.WriteFile(v.artifactPath(newOrphan), []byte("fresh"), 0000); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := v.Sweep(); err != nil {
+		t.Fatalf("Sweep: %v", err)
+	}
+	if _, err := os.Stat(v.artifactPath(oldOrphan)); !os.IsNotExist(err) {
+		t.Errorf("aged orphan not reclaimed: %v", err)
+	}
+	if _, err := os.Stat(v.artifactPath(newOrphan)); err != nil {
+		t.Errorf("fresh orphan removed too early: %v", err)
+	}
+	if _, err := v.Inspect(item.ID); err != nil {
+		t.Errorf("managed item removed by orphan sweep: %v", err)
 	}
 }
 
@@ -325,7 +410,7 @@ func TestRestorePKGBUILDKeepsStubOnFailure(t *testing.T) {
 	if err := os.Chmod(filepath.Dir(path), 0500); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(filepath.Dir(path), 0700)
+	defer func() { _ = os.Chmod(filepath.Dir(path), 0700) }()
 	if err := v.Restore(meta.ID, ""); err == nil {
 		t.Fatal("expected stage failure")
 	}
@@ -404,7 +489,7 @@ func TestRestoreToOriginalPath(t *testing.T) {
 	if _, err := os.Lstat(v.metaPath(meta.ID)); !os.IsNotExist(err) {
 		t.Errorf("expected meta removed, lstat err: %v", err)
 	}
-	if _, err := v.Inspect(meta.ID); err != ErrItemNotFound {
+	if _, err := v.Inspect(meta.ID); !errors.Is(err, ErrItemNotFound) {
 		t.Errorf("Inspect after restore = %v, want ErrItemNotFound", err)
 	}
 }
@@ -551,7 +636,7 @@ func TestInspectUnknownID(t *testing.T) {
 	}
 	defer v.Close()
 
-	if _, err := v.Inspect("does-not-exist"); err != ErrItemNotFound {
+	if _, err := v.Inspect("does-not-exist"); !errors.Is(err, ErrItemNotFound) {
 		t.Errorf("Inspect = %v, want ErrItemNotFound", err)
 	}
 }
@@ -661,5 +746,79 @@ func TestSweepCorruptMetadataDoesNotFail(t *testing.T) {
 	v.SetLimits(100, 1)
 	if err := v.Sweep(); err != nil {
 		t.Fatalf("Sweep should not fail on corrupted metadata, got: %v", err)
+	}
+}
+
+// TestSizeCapCacheStaysAccurate checks the cached used-bytes total is rebuilt
+// after a quarantine, a purge, and a sweep, so the cap is never miscounted.
+func TestSizeCapCacheStaysAccurate(t *testing.T) {
+	v, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	// 1 MB cap.
+	v.SetLimits(1, 0)
+
+	srcDir := t.TempDir()
+	first := filepath.Join(srcDir, "first.bin")
+	second := filepath.Join(srcDir, "second.bin")
+	third := filepath.Join(srcDir, "third.bin")
+	writeFile(t, first, bytes.Repeat([]byte("a"), 400*1024), 0644)
+	writeFile(t, second, bytes.Repeat([]byte("b"), 400*1024), 0644)
+	writeFile(t, third, bytes.Repeat([]byte("c"), 400*1024), 0644)
+
+	meta, err := v.QuarantineFile(first, 90, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("first quarantine: %v", err)
+	}
+	if _, err := v.QuarantineFile(second, 90, nil, nil, nil); err != nil {
+		t.Fatalf("second quarantine: %v", err)
+	}
+	// 800KB used; a third 400KB file must be rejected.
+	if _, err := v.QuarantineFile(third, 90, nil, nil, nil); err == nil {
+		t.Fatal("third quarantine should exceed the 1MB cap")
+	}
+
+	// Purging frees space: the same third file must now fit.
+	if err := v.Purge(meta.ID); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if _, err := v.QuarantineFile(third, 90, nil, nil, nil); err != nil {
+		t.Fatalf("quarantine after purge: %v", err)
+	}
+}
+
+// TestSweepInvalidatesSizeCache checks the size cap is recomputed after Sweep
+// removes expired artifacts.
+func TestSweepInvalidatesSizeCache(t *testing.T) {
+	v, err := New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	v.SetLimits(1, 1) // 1 MB cap, 1 day retention
+
+	srcDir := t.TempDir()
+	expired := filepath.Join(srcDir, "expired.bin")
+	writeFile(t, expired, bytes.Repeat([]byte("a"), 600*1024), 0644)
+	meta, err := v.QuarantineFile(expired, 90, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("quarantine: %v", err)
+	}
+	// Backdate the metadata so the item is expired.
+	meta.QuarantinedAt = time.Now().UTC().AddDate(0, 0, -2)
+	if err := v.writeMeta(meta); err != nil {
+		t.Fatalf("rewrite meta: %v", err)
+	}
+	if err := v.Sweep(); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+
+	// Space freed: a fresh 600KB file must fit again.
+	fresh := filepath.Join(srcDir, "fresh.bin")
+	writeFile(t, fresh, bytes.Repeat([]byte("b"), 600*1024), 0644)
+	if _, err := v.QuarantineFile(fresh, 90, nil, nil, nil); err != nil {
+		t.Fatalf("quarantine after sweep: %v", err)
 	}
 }

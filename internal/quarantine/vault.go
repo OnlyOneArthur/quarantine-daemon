@@ -1,3 +1,5 @@
+// Package quarantine manages the content-addressed vault: quarantining files,
+// listing/inspecting them, restoring originals and sweeping expired entries.
 package quarantine
 
 import (
@@ -23,6 +25,7 @@ const (
 	lockName   = "vault.lock"
 )
 
+// ErrItemNotFound is returned when a vault id has no metadata sidecar.
 var (
 	ErrItemNotFound       = errors.New("quarantine item not found")
 	ErrInvalidSource      = errors.New("invalid source file")
@@ -54,6 +57,12 @@ type Vault struct {
 	mu             sync.Mutex
 	maxVaultSizeMB int64
 	retentionDays  int
+
+	// usedBytes caches the total artifact bytes so the size cap does not have to
+	// stat every artifact on each quarantine. It is -1 when unknown and is
+	// invalidated on open, by SetLimits, and by any operation that removes
+	// artifacts (Sweep, Purge, Restore).
+	usedBytes int64
 }
 
 // New creates or opens a quarantine vault at vaultDir with 0700 permissions.
@@ -74,7 +83,7 @@ func New(vaultDir string) (*Vault, error) {
 		return nil, fmt.Errorf("open vault lock %s: %w", lockPath, err)
 	}
 
-	return &Vault{dir: dir, lockFile: lockFile}, nil
+	return &Vault{dir: dir, lockFile: lockFile, usedBytes: -1}, nil
 }
 
 // SetLimits configures the artifact size cap and retention period. Nonpositive
@@ -84,6 +93,8 @@ func (v *Vault) SetLimits(maxVaultSizeMB int64, retentionDays int) {
 	defer v.mu.Unlock()
 	v.maxVaultSizeMB = maxVaultSizeMB
 	v.retentionDays = retentionDays
+	// The cap changed; the cached total must be rebuilt before it is trusted.
+	v.usedBytes = -1
 }
 
 // Close releases the vault lock handle.
@@ -115,7 +126,9 @@ func (v *Vault) QuarantineFile(srcPath string, score int, triggers []string, cat
 
 	sf, err := fsutil.OpenSafe(cleanSrc)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidSource, err)
+		// Wrap with ErrInvalidSource while preserving the underlying cause so
+		// callers can still errors.Is/As against it.
+		return nil, fmt.Errorf("%w: %w", ErrInvalidSource, err)
 	}
 
 	hasher := sha256.New()
@@ -171,18 +184,35 @@ func (v *Vault) QuarantineFile(srcPath string, score int, triggers []string, cat
 			return fmt.Errorf("move to vault: %w", err)
 		}
 
+		// Any failure past the move would leave the artifact in the vault with no
+		// metadata sidecar: invisible to List/Inspect/Restore/Purge and blocking a
+		// later quarantine of the same content (ErrAlreadyQuarantined). Roll the
+		// artifact back to the source path so the file stays where it was.
+		rollback := func(err error) error {
+			if rbErr := rollbackArtifact(artifactPath, cleanSrc, meta.OriginalMode); rbErr != nil {
+				return fmt.Errorf("%w (rollback to %s failed: %w; artifact left at %s)", err, cleanSrc, rbErr, artifactPath)
+			}
+			return err
+		}
+
 		if err := neutralizePerms(artifactPath); err != nil {
-			return fmt.Errorf("neutralize artifact (file preserved at %s): %w", artifactPath, err)
+			return rollback(fmt.Errorf("neutralize artifact: %w", err))
 		}
 
 		if meta.IsPKGBUILD {
 			if err := writePKGBUILDStub(cleanSrc); err != nil {
-				return fmt.Errorf("write PKGBUILD stub (file preserved at %s): %w", artifactPath, err)
+				return rollback(fmt.Errorf("write PKGBUILD stub: %w", err))
 			}
 		}
 
 		if err := v.writeMeta(meta); err != nil {
-			return fmt.Errorf("write meta (file preserved at %s): %w", artifactPath, err)
+			return rollback(fmt.Errorf("write meta: %w", err))
+		}
+		// Keep the cached usage in step with the artifact this quarantine adds.
+		// checkSizeCap rebuilt the total (including this file) only when the cache
+		// was invalid, so guard against double counting.
+		if v.usedBytes >= 0 {
+			v.usedBytes += size
 		}
 		return nil
 	})
@@ -200,35 +230,42 @@ func (v *Vault) checkSizeCap(size int64) error {
 		return nil
 	}
 	maxBytes := v.maxVaultSizeMB * 1024 * 1024
+	if v.usedBytes < 0 {
+		used, err := v.rebuildUsedBytes()
+		if err != nil {
+			return err
+		}
+		v.usedBytes = used
+	}
+	if size > maxBytes-v.usedBytes {
+		return fmt.Errorf("vault size cap exceeded (%d MB)", v.maxVaultSizeMB)
+	}
+	return nil
+}
+
+// rebuildUsedBytes sums the sizes of every artifact in the vault directory,
+// including orphans with no metadata sidecar.
+func (v *Vault) rebuildUsedBytes() (int64, error) {
 	entries, err := os.ReadDir(v.dir)
 	if err != nil {
-		return fmt.Errorf("read vault dir: %w", err)
+		return 0, fmt.Errorf("read vault dir: %w", err)
 	}
 	var used int64
 	for _, entry := range entries {
 		name := entry.Name()
-		if len(name) != 64 {
-			continue
-		}
-		if !isHex64(name) {
-			continue
-		}
-		if !entry.Type().IsRegular() {
+		if len(name) != 64 || !isHex64(name) || !entry.Type().IsRegular() {
 			continue
 		}
 		info, err := entry.Info()
 		if err != nil {
-			return fmt.Errorf("stat vault artifact %s: %w", name, err)
-		}
-		if info.Size() > maxBytes-used {
-			return fmt.Errorf("vault size cap exceeded (%d MB)", v.maxVaultSizeMB)
+			if os.IsNotExist(err) {
+				continue
+			}
+			return 0, fmt.Errorf("stat vault artifact %s: %w", name, err)
 		}
 		used += info.Size()
 	}
-	if size > maxBytes-used {
-		return fmt.Errorf("vault size cap exceeded (%d MB)", v.maxVaultSizeMB)
-	}
-	return nil
+	return used, nil
 }
 
 // Sweep purges items older than the configured retention period.
@@ -242,11 +279,13 @@ func (v *Vault) Sweep() error {
 		if err != nil {
 			return fmt.Errorf("read vault dir: %w", err)
 		}
+		managed := make(map[string]struct{}, len(entries))
 		for _, entry := range entries {
 			if entry.IsDir() || !strings.HasSuffix(entry.Name(), metaSuffix) {
 				continue
 			}
 			id := strings.TrimSuffix(entry.Name(), metaSuffix)
+			managed[id] = struct{}{}
 			meta, err := v.readMeta(entry.Name())
 			if err != nil {
 				continue
@@ -261,6 +300,28 @@ func (v *Vault) Sweep() error {
 				return fmt.Errorf("remove expired metadata %s: %w", id, err)
 			}
 		}
+		// Artifacts with no sidecar (e.g. left by a crash between the move and the
+		// metadata write) are invisible to every other operation, so they would
+		// occupy vault quota forever. Age them out on the same retention schedule.
+		for _, entry := range entries {
+			name := entry.Name()
+			if entry.IsDir() || len(name) != 64 || !isHex64(name) || !entry.Type().IsRegular() {
+				continue
+			}
+			if _, ok := managed[name]; ok {
+				continue
+			}
+			info, err := entry.Info()
+			if err != nil || !info.ModTime().Before(cutoff) {
+				continue
+			}
+			if err := os.Remove(filepath.Join(v.dir, name)); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("remove orphaned artifact %s: %w", name, err)
+			}
+		}
+		// Artifacts were removed: drop the cached total so the next quarantine
+		// rebuilds it instead of trusting a now-stale figure.
+		v.usedBytes = -1
 		return nil
 	})
 }
@@ -429,6 +490,7 @@ func (v *Vault) Restore(id string, customDestPath string) error {
 		if err := os.Remove(v.metaPath(meta.ID)); err != nil {
 			return fmt.Errorf("remove meta: %w", err)
 		}
+		v.usedBytes = -1
 		return nil
 	})
 }
@@ -445,12 +507,20 @@ func (v *Vault) Purge(id string) error {
 		if err := os.Remove(v.metaPath(id)); err != nil {
 			return fmt.Errorf("remove meta: %w", err)
 		}
+		v.usedBytes = -1
 		return nil
 	})
 }
 
 func (v *Vault) metaPath(id string) string {
 	return filepath.Join(v.dir, id+metaSuffix)
+}
+
+// rollbackArtifact moves a vault artifact back to dest after a post-move failure,
+// restoring the original permission bits so the file is left as it was found.
+func rollbackArtifact(artifactPath, dest string, mode os.FileMode) error {
+	_ = os.Chmod(artifactPath, mode.Perm())
+	return os.Rename(artifactPath, dest)
 }
 
 func (v *Vault) writeMeta(meta *ItemMetadata) error {
@@ -572,7 +642,7 @@ func isHex64(s string) bool {
 	}
 	for i := 0; i < 64; i++ {
 		c := s[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
 			return false
 		}
 	}

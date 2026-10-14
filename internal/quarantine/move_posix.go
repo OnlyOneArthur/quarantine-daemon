@@ -1,5 +1,7 @@
 //go:build unix
 
+// Package quarantine manages the content-addressed vault: quarantining files,
+// listing/inspecting them, restoring originals and sweeping expired entries.
 package quarantine
 
 import (
@@ -57,7 +59,7 @@ func crossDeviceCopy(srcPath string, dev, ino uint64, destPath, vaultDir string)
 	if err != nil {
 		return err
 	}
-	defer src.Close()
+	defer func() { _ = src.Close() }()
 
 	if src.Dev != dev || src.Ino != ino {
 		return errors.New("source inode changed before cross-device copy")

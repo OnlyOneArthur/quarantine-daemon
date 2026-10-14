@@ -41,13 +41,30 @@ func BenchmarkVaultCheckSizeCap(b *testing.B) {
 
 	populateBenchmarkVault(b, v, 200)
 
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if err := v.checkSizeCap(1024); err != nil {
-			b.Fatal(err)
-		}
+	// Warm the cache once so the steady-state sub-benchmark measures the fast
+	// path rather than the initial rebuild.
+	if err := v.checkSizeCap(1024); err != nil {
+		b.Fatal(err)
 	}
+
+	b.Run("cached", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			if err := v.checkSizeCap(1024); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+
+	b.Run("rebuild", func(b *testing.B) {
+		b.ReportAllocs()
+		for i := 0; i < b.N; i++ {
+			v.usedBytes = -1 // force a full directory rescan each iteration
+			if err := v.checkSizeCap(1024); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 }
 
 func BenchmarkVaultSweep(b *testing.B) {

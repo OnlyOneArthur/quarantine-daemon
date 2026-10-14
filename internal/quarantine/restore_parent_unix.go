@@ -45,8 +45,12 @@ func checkDir(path string, fi os.FileInfo) error {
 	if !ok || (st.Uid != 0 && int(st.Uid) != os.Geteuid()) {
 		return fmt.Errorf("restore parent not owned by root or daemon: %s", path)
 	}
-	if fi.Mode().Perm()&0022 != 0 && !(st.Uid == 0 && fi.Mode()&os.ModeSticky != 0) {
-		return fmt.Errorf("restore parent is writable by other users: %s", path)
+	if fi.Mode().Perm()&0022 != 0 {
+		// Only a root-owned sticky directory (e.g. /tmp) may be writable by
+		// other users.
+		if st.Uid != 0 || fi.Mode()&os.ModeSticky == 0 {
+			return fmt.Errorf("restore parent is writable by other users: %s", path)
+		}
 	}
 	return nil
 }
