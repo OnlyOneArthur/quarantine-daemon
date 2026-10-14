@@ -42,6 +42,11 @@ func OpenSafe(path string) (*SafeFile, error) {
 	}
 
 	f := os.NewFile(uintptr(fd), cleanPath)
+	// The numeric conversions below are required for portability: unix.Stat_t
+	// field widths differ per platform (e.g. Dev is int32 on darwin, uint64 on
+	// linux), so they cannot be dropped even where the host type already
+	// matches the target type.
+	//nolint:unconvert
 	return &SafeFile{
 		File:   f,
 		Path:   cleanPath,
@@ -65,6 +70,7 @@ func VerifyPathInodeMatch(path string, expectedDev, expectedIno uint64) (bool, e
 		return false, fmt.Errorf("lstat %s: %w", cleanPath, err)
 	}
 
+	//nolint:unconvert // unix.Stat_t field widths are platform-dependent.
 	return uint64(st.Dev) == expectedDev && uint64(st.Ino) == expectedIno, nil
 }
 

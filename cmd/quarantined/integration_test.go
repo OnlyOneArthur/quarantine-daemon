@@ -1,3 +1,5 @@
+// Package main exercises the quarantined daemon end to end over a real Unix
+// socket and vault.
 package main
 
 import (
@@ -17,10 +19,10 @@ import (
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/watcher"
 )
 
-// waitFor repeatedly invokes check until it returns true or timeout expires.
-func waitFor(t *testing.T, timeout time.Duration, check func() bool) bool {
+// waitFor repeatedly invokes check until it returns true or the timeout expires.
+func waitFor(t *testing.T, check func() bool) bool {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if check() {
 			return true
@@ -106,7 +108,9 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 					return
 				}
 				if _, err := p.handlePath(ev.Path); err != nil {
-					// Logged internally by pipeline
+					// Logged internally by the pipeline; the file is simply retried on
+					// the next event.
+					_ = err
 				}
 			case _, ok := <-w.Errors():
 				if !ok {
@@ -151,7 +155,7 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("write clean file: %v", err)
 	}
 
-	ok := waitFor(t, 2*time.Second, func() bool {
+	ok := waitFor(t, func() bool {
 		st, err := client.GetStatus(rpcCtx)
 		return err == nil && st.ScannedCount >= 1
 	})
@@ -182,7 +186,7 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("write malicious PKGBUILD: %v", err)
 	}
 
-	ok = waitFor(t, 2*time.Second, func() bool {
+	ok = waitFor(t, func() bool {
 		st, err := client.GetStatus(rpcCtx)
 		return err == nil && st.QuarantineCount >= 1
 	})
@@ -210,7 +214,7 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("write malicious binary: %v", err)
 	}
 
-	ok = waitFor(t, 2*time.Second, func() bool {
+	ok = waitFor(t, func() bool {
 		st, err := client.GetStatus(rpcCtx)
 		return err == nil && st.QuarantineCount >= 2
 	})
@@ -376,7 +380,7 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("write payload to watchDir2: %v", err)
 	}
 
-	ok = waitFor(t, 2*time.Second, func() bool {
+	ok = waitFor(t, func() bool {
 		items, err := client.ListVault(rpcCtx)
 		return err == nil && len(items) == 1
 	})

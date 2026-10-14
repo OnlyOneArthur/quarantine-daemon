@@ -1,0 +1,41 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - bodyclose
+    - errorlint
+    - gocritic
+    - misspell
+    - nilerr
+    - prealloc
+    - revive
+    - unconvert
+    - unparam
+    - whitespace
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      # unix.Stat_t field widths differ per platform, so uint64(st.Dev) and
+      # friends are genuinely required even where the host type already matches.
+      - linters:
+          - unconvert
+        path: _test\.go$
+      # Test doubles implement interfaces whose unused parameters are part of
+      # the signature, so the parameter name is required for readability.
+      - linters:
+          - revive
+        path: _test\.go$
+        text: unused-parameter
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

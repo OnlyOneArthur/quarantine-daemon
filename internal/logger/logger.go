@@ -1,3 +1,4 @@
+// Package logger builds the structured slog logger used by the daemon and TUI.
 package logger
 
 import (

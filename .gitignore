@@ -12,3 +12,8 @@ demo/vault/
 
 # local-only tooling
 scripts/demo/
+
+# generated analysis/tooling output
+.archify/
+graphify-out/
+.pi/

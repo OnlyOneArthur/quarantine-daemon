@@ -1,3 +1,4 @@
+// Package fsutil provides symlink-safe file opening and small POSIX helpers.
 package fsutil
 
 import (
@@ -7,12 +8,15 @@ import (
 	"os"
 )
 
+// ErrNotRegularFile is returned when a path is not a regular file.
 var (
 	ErrNotRegularFile     = errors.New("not a regular file")
 	ErrSymlinkNotAllowed  = errors.New("symlink not allowed")
 	ErrExceedsMaxScanSize = errors.New("file exceeds maximum allowed scan size")
 )
 
+// SafeFile is an opened file with the metadata captured at open time, so callers
+// can detect a path being swapped underneath them.
 type SafeFile struct {
 	File   *os.File
 	Path   string
@@ -25,6 +29,7 @@ type SafeFile struct {
 	GID    int
 }
 
+// Close closes the underlying file if one is open.
 func (sf *SafeFile) Close() error {
 	if sf.File != nil {
 		return sf.File.Close()
