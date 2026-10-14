@@ -27,7 +27,7 @@ func TestWalkScopePrunedFunctionKeepsRootScope(t *testing.T) {
 		t.Fatal(err)
 	}
 	found := false
-	WalkScope(analysis.File, false, func(node syntax.Node, scope string) bool {
+	WalkScopeAncestors(analysis.File, false, func(node syntax.Node, scope string, _ []syntax.Node) bool {
 		if _, ok := node.(*syntax.FuncDecl); ok {
 			return false
 		}

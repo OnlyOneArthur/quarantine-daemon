@@ -3,8 +3,6 @@ package binary
 import (
 	"bytes"
 	"debug/macho"
-
-	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/entropy"
 )
 
 // MachOAnalysis holds all findings from static analysis of a Mach-O binary.
@@ -38,14 +36,14 @@ func AnalyzeMachO(data []byte) (*MachOAnalysis, error) {
 				if seg.Name == "__TEXT" {
 					segData, err := seg.Data()
 					if err == nil && len(segData) > 0 {
-						analysis.TextEntropy = entropy.Calculate(segData)
+						analysis.TextEntropy = CalculateEntropy(segData)
 					}
 				}
 			}
 		}
 	} else {
 		// Fallback for FAT binaries or truncated headers
-		analysis.TextEntropy = entropy.Calculate(data)
+		analysis.TextEntropy = CalculateEntropy(data)
 	}
 
 	for _, capability := range capStrings {

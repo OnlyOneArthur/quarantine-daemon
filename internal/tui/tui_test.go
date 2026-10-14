@@ -3,7 +3,6 @@ package tui
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -159,9 +158,6 @@ func startModel(t *testing.T, f *fakeClient) *Model {
 	origTick := tickCmd
 	tickCmd = func() tea.Cmd { return nil }
 	t.Cleanup(func() { tickCmd = origTick })
-	origBlink := blinkTickCmd
-	blinkTickCmd = func(d time.Duration) tea.Cmd { return nil }
-	t.Cleanup(func() { blinkTickCmd = origBlink })
 
 	m := NewModel(func() (Client, error) { return f, nil }, "test")
 	cur := feed(t, m, m.Init())
@@ -727,133 +723,6 @@ func TestIsWatched(t *testing.T) {
 	nilModel := &Model{}
 	if nilModel.isWatched("/var/tmp") {
 		t.Fatal("expected nil status to return false")
-	}
-}
-
-// newBlinkModel builds a wide dashboard model with the blink tick stubbed, so
-// tests drive blinkMsg by hand. It does not go through startModel because that
-// helper installs its own blink stub before the emblem is ever on screen.
-func newBlinkModel(t *testing.T, width, height int) *Model {
-	t.Helper()
-	orig := blinkTickCmd
-	blinkTickCmd = func(_ time.Duration) tea.Cmd { return func() tea.Msg { return nil } }
-	t.Cleanup(func() { blinkTickCmd = orig })
-
-	m := NewModel(func() (Client, error) { return newFakeClient(), nil }, "test")
-	m.pane = paneDashboard
-	cur, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: height})
-	got, ok := cur.(*Model)
-	if !ok {
-		t.Fatalf("Update returned %T, want *Model", cur)
-	}
-	return got
-}
-
-// TestBlinkSequenceAdvances asserts the eye blink walks blinkSequence end to
-// end and wraps, and that every step schedules the delay blinkDelays declares.
-// The emblem must also come up already open, not mid-shutter.
-func TestBlinkSequenceAdvances(t *testing.T) {
-	var delays []time.Duration
-	orig := blinkTickCmd
-	blinkTickCmd = func(d time.Duration) tea.Cmd {
-		delays = append(delays, d)
-		return func() tea.Msg { return nil }
-	}
-	t.Cleanup(func() { blinkTickCmd = orig })
-
-	m := NewModel(func() (Client, error) { return newFakeClient(), nil }, "test")
-	m.pane = paneDashboard
-	cur, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	m = cur.(*Model)
-
-	if !m.blinkActive {
-		t.Fatal("blink loop not started on wide dashboard")
-	}
-	if m.blinkStep != 0 {
-		t.Fatalf("blinkStep = %d, want 0 (eye starts open)", m.blinkStep)
-	}
-	if len(delays) != 1 || delays[0] != blinkDelays[0] {
-		t.Fatalf("first blink delay = %v, want [%v]", delays, blinkDelays[0])
-	}
-
-	frames := make([]int, 0, len(blinkSequence))
-	for range blinkSequence {
-		frames = append(frames, blinkSequence[m.blinkStep])
-		cur, cmd := m.Update(blinkMsg(time.Now()))
-		var ok bool
-		if m, ok = cur.(*Model); !ok {
-			t.Fatalf("Update returned %T, want *Model", cur)
-		}
-		if cmd == nil {
-			t.Fatalf("blink tick not rescheduled at step %d", m.blinkStep)
-		}
-	}
-	if m.blinkStep != 0 {
-		t.Errorf("blinkStep = %d after a full cycle, want wrap to 0", m.blinkStep)
-	}
-	if got := fmt.Sprint(frames); got != "[0 4 5 6 7 8 9 10 11 0 1 2 3 2 1]" {
-		t.Errorf("blink frames = %s, want [0 4 5 6 7 8 9 10 11 0 1 2 3 2 1]", got)
-	}
-	if len(delays) != len(blinkDelays)+1 {
-		t.Fatalf("recorded %d delays, want %d", len(delays), len(blinkDelays)+1)
-	}
-	for i, want := range blinkDelays {
-		if delays[i] != want {
-			t.Errorf("delay[%d] = %v, want %v", i, delays[i], want)
-		}
-	}
-}
-
-// TestBlinkStopsWhenEyeHidden asserts leaving the dashboard stops the blink
-// loop and resets it, and that a tick already in flight cannot restart it.
-func TestBlinkStopsWhenEyeHidden(t *testing.T) {
-	m := newBlinkModel(t, 100, 30)
-	m.blinkStep = 3
-
-	cur, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
-	var ok bool
-	if m, ok = cur.(*Model); !ok {
-		t.Fatalf("Update returned %T, want *Model", cur)
-	}
-	if m.pane != paneVault {
-		t.Fatalf("pane = %v, want vault", m.pane)
-	}
-	if m.blinkActive {
-		t.Error("blink loop still active after leaving dashboard")
-	}
-	if m.blinkStep != 0 {
-		t.Errorf("blinkStep = %d after leaving dashboard, want 0", m.blinkStep)
-	}
-	if _, cmd := m.Update(blinkMsg(time.Now())); cmd != nil {
-		t.Error("in-flight blink tick rescheduled while eye off screen")
-	}
-}
-
-// TestBlinkResumesAfterLeavingAndReturning asserts the loop starts again when
-// the dashboard comes back, and that a narrow terminal never starts it.
-func TestBlinkResumesAfterLeavingAndReturning(t *testing.T) {
-	m := newBlinkModel(t, 100, 30)
-	cur, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
-	m = cur.(*Model)
-	if m.blinkActive {
-		t.Fatal("blink loop survived leaving the dashboard")
-	}
-
-	cur, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
-	m = cur.(*Model)
-	if m.pane != paneDashboard {
-		t.Fatalf("pane = %v, want dashboard", m.pane)
-	}
-	if !m.blinkActive {
-		t.Error("blink loop did not restart on return to dashboard")
-	}
-	if cmd == nil {
-		t.Error("no blink tick returned on return to dashboard")
-	}
-
-	narrow := newBlinkModel(t, 40, 18)
-	if narrow.blinkActive {
-		t.Error("blink loop started on a terminal too narrow for the emblem")
 	}
 }
 

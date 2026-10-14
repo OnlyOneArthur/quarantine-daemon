@@ -34,16 +34,6 @@ type WatchManager interface {
 	AddWatchPath(path string) error
 }
 
-// StaticStatusProvider provides static status information for testing or simple setups.
-type StaticStatusProvider struct {
-	StatusData StatusResponse
-}
-
-// Status returns the fixed status payload this provider was built with.
-func (s StaticStatusProvider) Status() StatusResponse {
-	return s.StatusData
-}
-
 // Server is a Unix domain socket server handling IPC requests.
 type Server struct {
 	socketPath   string

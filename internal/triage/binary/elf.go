@@ -7,8 +7,6 @@ import (
 	"errors"
 	"net"
 	"strings"
-
-	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/entropy"
 )
 
 // ErrNotELF is returned when data does not contain a valid ELF image.
@@ -58,7 +56,7 @@ func AnalyzeELF(data []byte) (*ELFAnalysis, error) {
 
 	// 3. Fallback entropy calculation if .text section was not found
 	if !analysis.TextSectionFound {
-		analysis.TextEntropy = entropy.Calculate(data)
+		analysis.TextEntropy = CalculateEntropy(data)
 	}
 
 	// 4. Raw byte inspection for UPX, compiler signatures, capabilities, and IOCs
@@ -100,7 +98,7 @@ func analyzeWithDebugELF(f *elf.File, data []byte, analysis *ELFAnalysis) {
 		if start < uint64(len(data)) && end >= start && end <= uint64(len(data)) {
 			analysis.TextSectionFound = true
 			if end > start {
-				analysis.TextEntropy = entropy.Calculate(data[start:end])
+				analysis.TextEntropy = CalculateEntropy(data[start:end])
 			}
 		}
 	}
@@ -207,7 +205,7 @@ func parseRawELFHeaders(data []byte, analysis *ELFAnalysis) error {
 
 			if pFlags&1 != 0 && !analysis.TextSectionFound { // PF_X
 				if pFilesz > 0 && pOffset <= uint64(len(data)) && pFilesz <= uint64(len(data))-pOffset {
-					analysis.TextEntropy = entropy.Calculate(data[pOffset : pOffset+pFilesz])
+					analysis.TextEntropy = CalculateEntropy(data[pOffset : pOffset+pFilesz])
 					analysis.TextSectionFound = true
 				}
 			}

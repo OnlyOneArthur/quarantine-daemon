@@ -252,40 +252,23 @@ func dashboardModel(t *testing.T, width, height int) *Model {
 	return cur.(*Model)
 }
 
-// TestDashboardEyeArt asserts the eye emblem renders on wide terminals and
-// falls back to the plain text title on narrow ones, with layout safety in
-// both cases.
-func TestDashboardEyeArt(t *testing.T) {
+// TestDashboardHeader asserts the dashboard header renders safely across terminal sizes.
+func TestDashboardHeader(t *testing.T) {
 	t.Run("wide-100x30", func(t *testing.T) {
 		m := dashboardModel(t, 100, 30)
 		out := m.View()
-		t.Logf("Eyeball render (100x30 dashboard):\n%s", out)
-		assertLayoutSafety(t, "dashboard-eye", out, 100, 30)
-
-		for _, rune := range []string{"▀", "█", "●"} {
-			if !strings.Contains(out, rune) {
-				t.Errorf("dashboard eye art missing distinctive rune %q:\n%s", rune, out)
-			}
-		}
-		if !strings.Contains(out, "host quarantine daemon") {
-			t.Errorf("dashboard eye caption missing:\n%s", out)
-		}
-		if strings.Contains(out, "Host Quarantine Daemon") {
-			t.Errorf("wide dashboard should show eye art, not the plain text title:\n%s", out)
+		assertLayoutSafety(t, "dashboard-wide", out, 100, 30)
+		if !strings.Contains(out, "Host Quarantine Daemon") {
+			t.Errorf("wide dashboard missing title:\n%s", out)
 		}
 	})
 
 	t.Run("narrow-40x18", func(t *testing.T) {
 		m := dashboardModel(t, 40, 18)
 		out := m.View()
-		t.Logf("Eyeball render (40x18 dashboard fallback):\n%s", out)
-		assertLayoutSafety(t, "dashboard-fallback", out, 40, 18)
-
+		assertLayoutSafety(t, "dashboard-narrow", out, 40, 18)
 		if !strings.Contains(out, "Host Quarantine Daemon") {
-			t.Errorf("narrow dashboard should fall back to the text title:\n%s", out)
-		}
-		if strings.Contains(out, "█") {
-			t.Errorf("narrow dashboard must not render the eye art:\n%s", out)
+			t.Errorf("narrow dashboard missing title:\n%s", out)
 		}
 	})
 
@@ -296,92 +279,9 @@ func TestDashboardEyeArt(t *testing.T) {
 		// No WindowSizeMsg: width is still 0.
 		out := m.View()
 		if !strings.Contains(out, "Host Quarantine Daemon") {
-			t.Errorf("dashboard with unknown width should fall back to the text title:\n%s", out)
-		}
-		if strings.Contains(out, "█") {
-			t.Errorf("dashboard with unknown width must not render the eye art:\n%s", out)
+			t.Errorf("dashboard with unknown width missing title:\n%s", out)
 		}
 	})
-}
-
-// TestEyeArtOnlyOnDashboard asserts the emblem is exclusive to the dashboard
-// pane and never bleeds into Vault, Inspector or Watch.
-func TestEyeArtOnlyOnDashboard(t *testing.T) {
-	_, items := makeFakeItems()
-	for _, pane := range []struct {
-		name string
-		pane pane
-	}{
-		{"vault", paneVault},
-		{"inspector", paneInspector},
-		{"watch", paneWatch},
-	} {
-		t.Run(pane.name, func(t *testing.T) {
-			f := newFakeClient()
-			f.status = &ipc.StatusResponse{Version: "0.4.0", WatchPaths: []string{"/tmp"}}
-			f.items = items
-			m := connectedModel(t, f)
-			m.pane = pane.pane
-			cur, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-			m = cur.(*Model)
-			out := m.View()
-			assertLayoutSafety(t, pane.name, out, 100, 30)
-			if strings.Contains(out, "█") {
-				t.Errorf("eye art leaked into %s pane:\n%s", pane.name, out)
-			}
-		})
-	}
-}
-
-// TestEyeFramesUniform asserts every blink frame is exactly eyeArtWidth cells
-// wide and eyeArtHeight rows tall. The emblem is centered by measuring the
-// block, so a single ragged frame would make the eye twitch sideways mid-blink.
-func TestEyeFramesUniform(t *testing.T) {
-	if len(eyeFrames) != 12 {
-		t.Fatalf("eyeFrames has %d frames, want 12 (open, half, slit, shut, 8 gaze)", len(eyeFrames))
-	}
-	for i, frame := range eyeFrames {
-		if len(frame) != eyeArtHeight {
-			t.Errorf("frame %d has %d rows, want %d", i, len(frame), eyeArtHeight)
-		}
-		for r, line := range frame {
-			if w := lipgloss.Width(line); w != eyeArtWidth {
-				t.Errorf("frame %d row %d is %d cells wide, want %d: %q", i, r, w, eyeArtWidth, line)
-			}
-		}
-	}
-}
-
-// TestEyeFramesDistinct asserts no two blink frames render identically, so the
-// animation is actually visible rather than a still emblem.
-func TestEyeFramesDistinct(t *testing.T) {
-	seen := map[string]int{}
-	for i, frame := range eyeFrames {
-		key := strings.Join(frame, "|")
-		if prev, dup := seen[key]; dup {
-			t.Errorf("frame %d is identical to frame %d", i, prev)
-		}
-		seen[key] = i
-	}
-}
-
-// TestEyeArtRendersEveryBlinkFrame asserts renderEyeArt follows blinkStep
-// through blinkSequence and stays layout-safe at every step.
-func TestEyeArtRendersEveryBlinkFrame(t *testing.T) {
-	m := dashboardModel(t, 100, 30)
-	var prev string
-	for step := range blinkSequence {
-		m.blinkStep = step
-		out := m.View()
-		assertLayoutSafety(t, szLabel(100, 30), out, 100, 30)
-		if !strings.Contains(out, "host quarantine daemon") {
-			t.Errorf("blink step %d lost the eye caption", step)
-		}
-		if step > 0 && out == prev {
-			t.Errorf("blink step %d renders identical to step %d", step, step-1)
-		}
-		prev = out
-	}
 }
 
 func szLabel(w, h int) string {

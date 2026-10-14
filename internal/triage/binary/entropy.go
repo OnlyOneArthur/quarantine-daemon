@@ -1,13 +1,12 @@
-// Package entropy computes Shannon entropy over byte streams.
-package entropy
+package binary
 
 import (
 	"math"
 )
 
-// Calculate computes the Shannon entropy of data, returning a value between 0.0 and 8.0.
-// If data is empty, Calculate returns 0.0.
-func Calculate(data []byte) float64 {
+// CalculateEntropy computes the Shannon entropy of data, returning a value between 0.0 and 8.0.
+// If data is empty, CalculateEntropy returns 0.0.
+func CalculateEntropy(data []byte) float64 {
 	n := len(data)
 	if n == 0 {
 		return 0.0

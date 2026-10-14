@@ -272,7 +272,8 @@ func TestRPCInspectUnknownItem(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown id")
 	}
-	if !ipc.IsNotFound(err) {
+	var rpcErr *ipc.RPCError
+	if !errors.As(err, &rpcErr) || rpcErr.Code != "ITEM_NOT_FOUND" {
 		t.Fatalf("expected ITEM_NOT_FOUND, got %v", err)
 	}
 }

@@ -200,13 +200,6 @@ func checkIsVCSPackage(analysis *Analysis) bool {
 	return false
 }
 
-// WalkScope walks the AST while tracking execution scope accurately.
-func WalkScope(file *syntax.File, isInstallScript bool, visitor func(node syntax.Node, scope string) bool) {
-	WalkScopeAncestors(file, isInstallScript, func(node syntax.Node, scope string, _ []syntax.Node) bool {
-		return visitor(node, scope)
-	})
-}
-
 // WalkScopeAncestors is WalkScope with the current node's ancestor chain
 // (root first, immediate parent last) passed to the visitor. The slice aliases
 // internal walk state: it is only valid for the duration of the call and must

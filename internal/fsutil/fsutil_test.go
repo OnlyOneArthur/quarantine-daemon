@@ -109,36 +109,3 @@ func TestLockFile(t *testing.T) {
 		t.Errorf("unlock: %v", err)
 	}
 }
-
-func TestOpenSafeCreate(t *testing.T) {
-	tmpDir := t.TempDir()
-	filePath := filepath.Join(tmpDir, "created.bin")
-
-	f, err := OpenSafeCreate(filePath, 0600)
-	if err != nil {
-		t.Fatalf("OpenSafeCreate failed: %v", err)
-	}
-	_ = f.Close()
-
-	_, err = OpenSafeCreate(filePath, 0600)
-	if err == nil {
-		t.Fatalf("expected OpenSafeCreate to fail on existing file")
-	}
-}
-
-func TestSafeFileIsSparse(t *testing.T) {
-	sfNormal := &SafeFile{Size: 8192, Blocks: 16} // 16 * 512 = 8192 bytes
-	if sfNormal.IsSparse() {
-		t.Errorf("expected normal file not to be sparse")
-	}
-
-	sfSparse := &SafeFile{Size: 1048576, Blocks: 8} // 8 * 512 = 4096 bytes allocated for 1MB logical
-	if !sfSparse.IsSparse() {
-		t.Errorf("expected sparse file to be flagged")
-	}
-
-	sfSmall := &SafeFile{Size: 2048, Blocks: 0}
-	if sfSmall.IsSparse() {
-		t.Errorf("expected small file <= 4096 not to trigger sparse flag")
-	}
-}

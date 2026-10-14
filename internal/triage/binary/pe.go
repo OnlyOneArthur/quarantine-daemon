@@ -3,8 +3,6 @@ package binary
 import (
 	"bytes"
 	"debug/pe"
-
-	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/entropy"
 )
 
 // PEAnalysis holds all findings from static analysis of a PE binary.
@@ -46,10 +44,10 @@ func AnalyzePE(data []byte) (*PEAnalysis, error) {
 				secData, err := sec.Data()
 				if err == nil && len(secData) > 0 {
 					if sec.Name == ".text" {
-						analysis.TextEntropy = entropy.Calculate(secData)
+						analysis.TextEntropy = CalculateEntropy(secData)
 						hasText = true
 					} else if !hasFallback {
-						fallbackEntropy = entropy.Calculate(secData)
+						fallbackEntropy = CalculateEntropy(secData)
 						hasFallback = true
 					}
 				}
@@ -71,7 +69,7 @@ func AnalyzePE(data []byte) (*PEAnalysis, error) {
 		}
 	} else {
 		// Fallback for truncated/corrupted PE headers
-		analysis.TextEntropy = entropy.Calculate(data)
+		analysis.TextEntropy = CalculateEntropy(data)
 	}
 
 	for _, capability := range capStrings {

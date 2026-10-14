@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -268,8 +269,9 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 	}
 
 	_, err = client.InspectItem(rpcCtx, "nonexistent-hash")
-	if !ipc.IsNotFound(err) {
-		t.Fatalf("expected IsNotFound error for nonexistent ID, got %v", err)
+	var rpcErr *ipc.RPCError
+	if !errors.As(err, &rpcErr) || rpcErr.Code != "ITEM_NOT_FOUND" {
+		t.Fatalf("expected ITEM_NOT_FOUND error for nonexistent ID, got %v", err)
 	}
 
 	dummyTarget := filepath.Join(root, "target.txt")

@@ -30,6 +30,33 @@ const (
 	customWatchPath = "~/Downloads/PKGBUILD"
 )
 
+// Client is the daemon IPC surface the TUI uses. The TUI never touches the vault directly.
+type Client interface {
+	GetStatus(ctx context.Context) (*ipc.StatusResponse, error)
+	ListVault(ctx context.Context) ([]*quarantine.ItemMetadata, error)
+	InspectItem(ctx context.Context, id string) (*quarantine.ItemMetadata, error)
+	RestoreItem(ctx context.Context, id, destPath string) error
+	PurgeItem(ctx context.Context, id string) error
+	AddWatchPath(ctx context.Context, path string) error
+	Close() error
+}
+
+var _ Client = (*ipc.Client)(nil)
+
+// Dialer opens a new daemon connection. The Model calls it at startup and after disconnects.
+type Dialer func() (Client, error)
+
+// SocketDialer returns a Dialer connecting to the daemon control socket at socketPath.
+func SocketDialer(socketPath string) Dialer {
+	return func() (Client, error) {
+		c, err := ipc.NewClient(socketPath)
+		if err != nil {
+			return nil, err
+		}
+		return c, nil
+	}
+}
+
 type pane int
 
 const (
@@ -148,10 +175,6 @@ type Model struct {
 	// when the vault pane shows its spinner instead of the empty-state frame.
 	vaultLoaded bool
 
-	// blinkStep indexes blinkSequence; blinkActive indicates if the blink loop is running.
-	blinkStep   int
-	blinkActive bool
-
 	// spinActive indicates the spinner tick loop is running.
 	spinActive bool
 
@@ -212,9 +235,6 @@ type addWatchMsg struct {
 	err    error
 }
 
-// blinkMsg advances the eye blink animation.
-type blinkMsg time.Time
-
 // Init starts the refresh loop.
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(m.refreshCmd(), tickCmd())
@@ -228,30 +248,6 @@ var tickCmd = func() tea.Cmd {
 
 // spinnerTickCmd is a var so tests can stub the spinner timer out, like tickCmd.
 var spinnerTickCmd = func(m spinner.Model) tea.Cmd { return m.Tick }
-
-// blinkSequence maps an animation step to an index into eyeFrames (view.go):
-// open, look all eight directions (frames 4..11) and back to center, then
-// open → half → slit → shut → slit → half; wraps to the open eye and repeats.
-var blinkSequence = []int{0, 4, 5, 6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 2, 1}
-
-// blinkDelays is how long each step of blinkSequence is held: a short rest
-// on the open eye, one beat per gaze direction, then the shutter.
-var blinkDelays = []time.Duration{
-	500 * time.Millisecond,
-	220 * time.Millisecond, 220 * time.Millisecond, 220 * time.Millisecond, 220 * time.Millisecond,
-	220 * time.Millisecond, 220 * time.Millisecond, 220 * time.Millisecond, 220 * time.Millisecond,
-	300 * time.Millisecond,
-	90 * time.Millisecond,
-	70 * time.Millisecond,
-	300 * time.Millisecond,
-	70 * time.Millisecond,
-	90 * time.Millisecond,
-}
-
-// blinkTickCmd is a var so tests can stub the blink timer out, like tickCmd.
-var blinkTickCmd = func(d time.Duration) tea.Cmd {
-	return tea.Tick(d, func(t time.Time) tea.Msg { return blinkMsg(t) })
-}
 
 // spinnerVisible reports whether the active pane shows the spinner: the
 // dashboard before the first status reply and the vault before the first vault
@@ -270,32 +266,6 @@ func (m *Model) spinnerVisible() bool {
 	default:
 		return false
 	}
-}
-
-// eyeVisible reports whether the dashboard eye emblem is on screen, which is
-// also what gates the blink animation: the emblem renders only on the
-// dashboard pane and only once the terminal is wide enough for it.
-func (m *Model) eyeVisible() bool {
-	return m.pane == paneDashboard && m.width >= eyeMinWidth
-}
-
-// ensureBlink ensures the eye blink tick loop is active when the eye is
-// visible, or stopped when it is off screen.
-func (m *Model) ensureBlink(cmd tea.Cmd) tea.Cmd {
-	if !m.eyeVisible() {
-		m.blinkActive = false
-		m.blinkStep = 0
-		return cmd
-	}
-	if m.blinkActive {
-		return cmd
-	}
-	m.blinkActive = true
-	tick := blinkTickCmd(blinkDelays[m.blinkStep])
-	if cmd == nil {
-		return tick
-	}
-	return tea.Batch(cmd, tick)
 }
 
 // ensureSpinner ensures the spinner tick loop is active while the spinner is
@@ -401,7 +371,6 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	model, cmd := m.update(msg)
 	if mm, ok := model.(*Model); ok {
 		cmd = mm.ensureSpinner(cmd)
-		cmd = mm.ensureBlink(cmd)
 		return mm, cmd
 	}
 	return model, cmd
@@ -443,15 +412,6 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.backoff = 0
 		m.reconnectWait = 0
 		return m, fetchCmd(msg.client)
-
-	case blinkMsg:
-		if !m.eyeVisible() {
-			m.blinkActive = false
-			m.blinkStep = 0
-			return m, nil
-		}
-		m.blinkStep = (m.blinkStep + 1) % len(blinkSequence)
-		return m, blinkTickCmd(blinkDelays[m.blinkStep])
 
 	case spinner.TickMsg:
 		if !m.spinnerVisible() {

@@ -37,15 +37,6 @@ func (sf *SafeFile) Close() error {
 	return nil
 }
 
-// IsSparse reports whether the file appears to be sparse (allocated blocks * 512 < logical size).
-func (sf *SafeFile) IsSparse() bool {
-	if sf.Size <= 4096 {
-		return false
-	}
-	allocatedBytes := sf.Blocks * 512
-	return allocatedBytes < sf.Size
-}
-
 // ReadBounded reads at most maxBytes from r. If r has more data than maxBytes,
 // it returns ErrExceedsMaxScanSize along with data read up to maxBytes.
 func ReadBounded(r io.Reader, maxBytes int64) ([]byte, error) {

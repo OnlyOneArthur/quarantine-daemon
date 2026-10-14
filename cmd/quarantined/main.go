@@ -5,15 +5,16 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/ipc"
-	"github.com/OnlyOneArthur/quarantine-daemon/internal/logger"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/quarantine"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/tui"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/watcher"
@@ -51,7 +52,7 @@ func main() {
 		return
 	}
 
-	log := logger.Init(cfg.Service.LogLevel, os.Stderr)
+	log := initLogger(cfg.Service.LogLevel, os.Stderr)
 	log.Info("starting host quarantine daemon",
 		"version", Version,
 		"vault_dir", cfg.Quarantine.VaultDir,
@@ -63,6 +64,27 @@ func main() {
 		log.Error("daemon failed", "error", err)
 		os.Exit(1)
 	}
+}
+
+// initLogger initializes a structured slog.Logger for the daemon.
+func initLogger(levelStr string, w io.Writer) *slog.Logger {
+	if w == nil {
+		w = os.Stderr
+	}
+
+	var level slog.Level
+	switch strings.ToLower(strings.TrimSpace(levelStr)) {
+	case "debug":
+		level = slog.LevelDebug
+	case "warn", "warning":
+		level = slog.LevelWarn
+	case "error":
+		level = slog.LevelError
+	default:
+		level = slog.LevelInfo
+	}
+
+	return slog.New(slog.NewTextHandler(w, &slog.HandlerOptions{Level: level}))
 }
 
 // run wires vault, watcher, pipeline and IPC server, and blocks until SIGINT/SIGTERM.

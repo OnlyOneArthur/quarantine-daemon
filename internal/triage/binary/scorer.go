@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
-	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/entropy"
 )
 
 // Verdict defines the triage action verdict.
@@ -177,6 +176,26 @@ func appendCommonEntropyAndIOCs(res *TriageResult, upx bool, iocs []string) {
 	}
 }
 
+func appendCommonFindings(res *TriageResult, textEntropy, entThresh float64, entName, entDesc string, upx bool, iocs, caps []string, capPrefix, capDesc string) {
+	if textEntropy > entThresh {
+		res.Triggers = append(res.Triggers, ThreatTrigger{
+			Category:    CategoryEntropy,
+			Name:        entName,
+			Description: entDesc,
+			ScoreWeight: 25,
+		})
+	}
+	appendCommonEntropyAndIOCs(res, upx, iocs)
+	for _, capName := range caps {
+		res.Triggers = append(res.Triggers, ThreatTrigger{
+			Category:    CategoryCapabilities,
+			Name:        capPrefix + capName,
+			Description: capDesc + capName,
+			ScoreWeight: 20,
+		})
+	}
+}
+
 // ScoreELF computes the correlated multi-category threat score for an ELF analysis.
 func ScoreELF(analysis *ELFAnalysis, cfg *config.Config, path string) *TriageResult {
 	entThresh, qThresh := resolveThresholds(cfg)
@@ -213,28 +232,11 @@ func ScoreELF(analysis *ELFAnalysis, cfg *config.Config, path string) *TriageRes
 			ScoreWeight: 35,
 		})
 	}
-	if analysis.TextEntropy > entThresh {
-		res.Triggers = append(res.Triggers, ThreatTrigger{
-			Category:    CategoryEntropy,
-			Name:        "high_text_entropy",
-			Description: "Executable section entropy exceeds threshold, indicating packing or encryption",
-			ScoreWeight: 25,
-		})
-	}
 
-	appendCommonEntropyAndIOCs(res, analysis.HasUPX, analysis.SuspiciousIOCs)
-
-	for _, capName := range analysis.SuspiciousCapabilities {
-		switch capName {
-		case "memfd_create", "process_vm_writev", "VirtualAllocEx", "ptrace":
-			res.Triggers = append(res.Triggers, ThreatTrigger{
-				Category:    CategoryCapabilities,
-				Name:        "injection_api_" + capName,
-				Description: "High-risk process injection/memory execution API detected: " + capName,
-				ScoreWeight: 20,
-			})
-		}
-	}
+	appendCommonFindings(res, analysis.TextEntropy, entThresh, "high_text_entropy",
+		"Executable section entropy exceeds threshold, indicating packing or encryption",
+		analysis.HasUPX, analysis.SuspiciousIOCs, analysis.SuspiciousCapabilities,
+		"injection_api_", "High-risk process injection/memory execution API detected: ")
 
 	return finalizeResult(res, res.IsGoBinary, res.IsRustBinary, qThresh)
 }
@@ -257,25 +259,11 @@ func ScorePE(analysis *PEAnalysis, cfg *config.Config, path string) *TriageResul
 			ScoreWeight: 35,
 		})
 	}
-	if analysis.TextEntropy > entThresh {
-		res.Triggers = append(res.Triggers, ThreatTrigger{
-			Category:    CategoryEntropy,
-			Name:        "pe_high_entropy",
-			Description: "PE section entropy exceeds threshold",
-			ScoreWeight: 25,
-		})
-	}
 
-	appendCommonEntropyAndIOCs(res, analysis.HasUPX, analysis.SuspiciousIOCs)
-
-	for _, capName := range analysis.SuspiciousCapabilities {
-		res.Triggers = append(res.Triggers, ThreatTrigger{
-			Category:    CategoryCapabilities,
-			Name:        "pe_injection_api_" + capName,
-			Description: "Process injection API imported: " + capName,
-			ScoreWeight: 20,
-		})
-	}
+	appendCommonFindings(res, analysis.TextEntropy, entThresh, "pe_high_entropy",
+		"PE section entropy exceeds threshold",
+		analysis.HasUPX, analysis.SuspiciousIOCs, analysis.SuspiciousCapabilities,
+		"pe_injection_api_", "Process injection API imported: ")
 
 	return finalizeResult(res, false, false, qThresh)
 }
@@ -298,25 +286,11 @@ func ScoreMachO(analysis *MachOAnalysis, cfg *config.Config, path string) *Triag
 			ScoreWeight: 35,
 		})
 	}
-	if analysis.TextEntropy > entThresh {
-		res.Triggers = append(res.Triggers, ThreatTrigger{
-			Category:    CategoryEntropy,
-			Name:        "macho_high_entropy",
-			Description: "Mach-O text entropy exceeds threshold",
-			ScoreWeight: 25,
-		})
-	}
 
-	appendCommonEntropyAndIOCs(res, analysis.HasUPX, analysis.SuspiciousIOCs)
-
-	for _, capName := range analysis.SuspiciousCapabilities {
-		res.Triggers = append(res.Triggers, ThreatTrigger{
-			Category:    CategoryCapabilities,
-			Name:        "injection_api_" + capName,
-			Description: "High-risk process injection/memory execution API detected: " + capName,
-			ScoreWeight: 20,
-		})
-	}
+	appendCommonFindings(res, analysis.TextEntropy, entThresh, "macho_high_entropy",
+		"Mach-O text entropy exceeds threshold",
+		analysis.HasUPX, analysis.SuspiciousIOCs, analysis.SuspiciousCapabilities,
+		"injection_api_", "High-risk process injection/memory execution API detected: ")
 
 	return finalizeResult(res, false, false, qThresh)
 }
@@ -360,7 +334,7 @@ func TriageBinary(data []byte, path string, cfg *config.Config) (*TriageResult, 
 	}
 
 	// For scripts or unknown formats: calculate entropy and inspect for UPX/IOCs/capabilities
-	ent := entropy.Calculate(data)
+	ent := CalculateEntropy(data)
 	entropyThreshold := cfg.Binary.EntropyThreshold
 	if entropyThreshold <= 0 {
 		entropyThreshold = 7.3

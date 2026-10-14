@@ -246,11 +246,3 @@ func (c *Client) AddWatchPath(ctx context.Context, path string) error {
 	return c.call(ctx, MethodAddWatchPath, AddWatchPathParams{Path: path}, nil)
 }
 
-// IsNotFound reports whether err is an ITEM_NOT_FOUND protocol error.
-func IsNotFound(err error) bool {
-	var rpcErr *RPCError
-	if errors.As(err, &rpcErr) {
-		return rpcErr.Code == "ITEM_NOT_FOUND"
-	}
-	return false
-}

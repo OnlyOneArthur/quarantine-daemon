@@ -73,17 +73,6 @@ func VerifyPathInodeMatch(path string, expectedDev, expectedIno uint64) (bool, e
 	return uint64(st.Dev) == expectedDev && uint64(st.Ino) == expectedIno, nil
 }
 
-// OpenSafeCreate creates a new file exclusively without following symlinks.
-func OpenSafeCreate(path string, perm os.FileMode) (*os.File, error) {
-	cleanPath := filepath.Clean(path)
-	flags := unix.O_WRONLY | unix.O_CREAT | unix.O_EXCL | unix.O_NOFOLLOW | unix.O_CLOEXEC
-	fd, err := unix.Open(cleanPath, flags, uint32(perm))
-	if err != nil {
-		return nil, fmt.Errorf("safe create %s: %w", cleanPath, err)
-	}
-	return os.NewFile(uintptr(fd), cleanPath), nil
-}
-
 // LockFile applies a non-blocking exclusive file lock (flock).
 func LockFile(f *os.File) (func() error, error) {
 	if f == nil {
