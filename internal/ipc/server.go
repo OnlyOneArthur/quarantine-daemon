@@ -39,6 +39,7 @@ type StaticStatusProvider struct {
 	StatusData StatusResponse
 }
 
+// Status returns the fixed status payload this provider was built with.
 func (s StaticStatusProvider) Status() StatusResponse {
 	return s.StatusData
 }
@@ -56,6 +57,10 @@ type Server struct {
 	conns    map[net.Conn]struct{}
 	closed   bool
 	stopOnce sync.Once
+
+	// stopped is closed by Stop so the context-watcher goroutine can exit even
+	// when the caller never cancels the context.
+	stopped chan struct{}
 }
 
 // NewServer returns an unstarted Server configured to listen at socketPath.
@@ -65,6 +70,7 @@ func NewServer(socketPath string, vault *quarantine.Vault, statusProvider Status
 		vault:      vault,
 		provider:   statusProvider,
 		conns:      make(map[net.Conn]struct{}),
+		stopped:    make(chan struct{}),
 	}
 }
 
@@ -108,10 +114,14 @@ func (s *Server) Start(ctx context.Context) error {
 	s.wg.Add(1)
 	s.mu.Unlock()
 
-	// Shutdown asynchronously if context is cancelled
+	// Shutdown asynchronously if context is cancelled. Select on stopped so the
+	// goroutine cannot outlive a direct Stop call that left the context live.
 	go func() {
-		<-ctx.Done()
-		_ = s.Stop()
+		select {
+		case <-ctx.Done():
+			_ = s.Stop()
+		case <-s.stopped:
+		}
 	}()
 
 	defer s.wg.Done()
@@ -181,6 +191,8 @@ func (s *Server) Stop() error {
 		}
 		s.mu.Unlock()
 
+		close(s.stopped)
+
 		if ln != nil {
 			if err := ln.Close(); err != nil {
 				stopErr = err
@@ -246,7 +258,11 @@ func (s *Server) handleConn(conn net.Conn) {
 	buf := make([]byte, 64*1024)
 	scanner.Buffer(buf, 10*1024*1024)
 
-	for scanner.Scan() {
+	for {
+		_ = conn.SetReadDeadline(time.Now().Add(connReadTimeout))
+		if !scanner.Scan() {
+			break
+		}
 		line := scanner.Bytes()
 		if len(line) == 0 {
 			continue
@@ -265,17 +281,29 @@ func (s *Server) handleConn(conn net.Conn) {
 			return
 		}
 		data = append(data, '\n')
+		_ = conn.SetWriteDeadline(time.Now().Add(connWriteTimeout))
 		if _, err := conn.Write(data); err != nil {
 			return
 		}
 	}
 
-	// EOF and closed connections end the scan with a nil error; anything else
-	// (e.g. a line over the buffer limit) is reported to the client.
+	// EOF and closed connections end the scan with a nil error; an idle timeout
+	// is a normal hang-up, while anything else (e.g. a line over the buffer
+	// limit) is reported to the client.
 	if err := scanner.Err(); err != nil {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			return
+		}
 		s.writeError(conn, "", "INVALID_REQUEST", err.Error())
 	}
 }
+
+// Connection deadlines bound a single misbehaving client: without them a
+// stalled peer would pin a handler goroutine and its file descriptor forever.
+const (
+	connReadTimeout  = 5 * time.Minute
+	connWriteTimeout = 30 * time.Second
+)
 
 // vaultOrError returns the configured vault, or records VAULT_UNAVAILABLE on resp.
 func (s *Server) vaultOrError(resp *Response) *quarantine.Vault {

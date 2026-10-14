@@ -113,6 +113,14 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 	if err := json.Unmarshal(line, &resp); err != nil {
 		return fmt.Errorf("decode response: %w", err)
 	}
+	if resp.ID != req.ID {
+		// A synchronous client only ever has one request in flight, so a
+		// mismatched id means the stream is desynchronized (or corrupted).
+		// Drop the connection and surface it as a transport error so an
+		// idempotent call can redial and retry cleanly.
+		c.drop()
+		return fmt.Errorf("response id %q does not match request id %q", resp.ID, req.ID)
+	}
 	if resp.Error != nil {
 		return resp.Error
 	}
