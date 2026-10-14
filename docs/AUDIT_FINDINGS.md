@@ -16,6 +16,7 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 | PKG-02 | `internal/triage/pkgbuild/rules.go:96-594` | Spaghetti & Architecture | High | 594 LOC file + 70 LOC `checkCallExpr`, 55 LOC `checkTamperingCommand`, 51 LOC `cmdSubstOutputExecuted` | Resolved |
 | WAT-01 | `internal/watcher/watcher.go:1-565` | Spaghetti & Architecture | High | 565 LOC file mixing monitoring, debouncing, file readiness polling, and reconcile walks | Resolved |
 | PKG-03 | `internal/triage/pkgbuild/scorer.go:13-95` | Spaghetti & Architecture | Medium | 82 LOC `ScorePKGBUILD` mixing trigger collection, score/verdict calculation & dampener deduplication | Resolved |
+| PKG-04 | `internal/triage/pkgbuild/dampeners.go:35-107` | Spaghetti & Architecture | Medium | 71 LOC `EvaluateIntegrity` intermixing VCS exemptions, missing checksum checks & inline SKIP closures | Resolved |
 
 ---
 
@@ -236,3 +237,22 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 - **Expected Impact:**
   - `ScorePKGBUILD` eliminated as >50 LOC violation.
   - Net metric reduction of 1 violation (10 -> 9).
+
+---
+
+### [PKG-04] Oversized `EvaluateIntegrity` in PKGBUILD Dampeners
+
+- **File & Location:** `internal/triage/pkgbuild/dampeners.go:35-107`
+- **Issue Category:** Spaghetti & Architecture
+- **Severity:** Medium
+- **Current State:**
+  `EvaluateIntegrity` was a 71 LOC function combining VCS exemption logic with missing checksum detection and an inline state-mutating closure (`checkSkip`) called sequentially across `Sha256sums`, `Sha512sums`, and `Md5sums`.
+- **Refactored Code:**
+  Decomposed `EvaluateIntegrity` into:
+  - `EvaluateIntegrity` (16 LOC): guard conditions for install scriptlets, VCS packages, and configuration flags.
+  - `evaluateSourceChecksums` (25 LOC): trigger construction for missing or SKIP checksums.
+  - `hasAnyChecksums` (3 LOC): boolean predicate for presence of any hash algorithm.
+  - `hasSkipChecksum` (10 LOC): variadic scanner inspecting multiple checksum slices for case-insensitive `SKIP` tokens.
+- **Expected Impact:**
+  - `EvaluateIntegrity` eliminated as >50 LOC violation (reduced from 71 LOC to 16 LOC).
+  - Net metric reduction of 1 violation (9 -> 8).

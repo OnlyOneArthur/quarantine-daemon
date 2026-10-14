@@ -33,11 +33,12 @@ func stagingTarget(path string) (target string, within bool) {
 
 // EvaluateIntegrity applies VCS dampening or flags missing/SKIP checksums on static sources.
 func EvaluateIntegrity(analysis *Analysis, cfg *config.Config) ([]ThreatTrigger, []string) {
-	var triggers []ThreatTrigger
-	var dampeners []string
-
 	if analysis.IsInstallScript {
-		return triggers, dampeners
+		return nil, nil
+	}
+
+	if analysis.IsVCSPackage {
+		return nil, []string{"vcs_package_dampener (exempt sha256sums=SKIP)"}
 	}
 
 	flagSkip := true
@@ -45,61 +46,50 @@ func EvaluateIntegrity(analysis *Analysis, cfg *config.Config) ([]ThreatTrigger,
 		flagSkip = cfg.PKGBUILD.FlagSkipChecksums
 	}
 
-	if analysis.IsVCSPackage {
-		dampeners = append(dampeners, "vcs_package_dampener (exempt sha256sums=SKIP)")
-		return triggers, dampeners
+	if !flagSkip || len(analysis.Source) == 0 {
+		return nil, nil
 	}
 
-	if !flagSkip {
-		return triggers, dampeners
-	}
+	return evaluateSourceChecksums(analysis)
+}
 
-	if len(analysis.Source) == 0 {
-		return triggers, dampeners
-	}
-
-	hasChecksums := len(analysis.Sha256sums) > 0 || len(analysis.Sha512sums) > 0 || len(analysis.Md5sums) > 0
-	if !hasChecksums {
-		triggers = append(triggers, ThreatTrigger{
+func evaluateSourceChecksums(analysis *Analysis) ([]ThreatTrigger, []string) {
+	if !hasAnyChecksums(analysis) {
+		return []ThreatTrigger{{
 			Category:    CategoryIntegrity,
 			Name:        "non_vcs_missing_checksums",
 			Description: "Non-VCS package missing integrity checksums for static source",
 			ScoreWeight: 15,
 			Line:        1,
 			Scope:       ScopeRoot,
-		})
-		return triggers, dampeners
+		}}, nil
 	}
 
-	hasSkip := false
-	checkSkip := func(sums []string) {
-		for _, s := range sums {
-			clean := strings.Trim(s, `'"`)
-			if strings.EqualFold(clean, "SKIP") {
-				hasSkip = true
-				return
-			}
-		}
-	}
-
-	checkSkip(analysis.Sha256sums)
-	if !hasSkip {
-		checkSkip(analysis.Sha512sums)
-	}
-	if !hasSkip {
-		checkSkip(analysis.Md5sums)
-	}
-
-	if hasSkip {
-		triggers = append(triggers, ThreatTrigger{
+	if hasSkipChecksum(analysis.Sha256sums, analysis.Sha512sums, analysis.Md5sums) {
+		return []ThreatTrigger{{
 			Category:    CategoryIntegrity,
 			Name:        "non_vcs_skip_checksum",
 			Description: "Non-VCS package with static source specifies sha256sums=('SKIP')",
 			ScoreWeight: 15,
 			Line:        1,
 			Scope:       ScopeRoot,
-		})
+		}}, nil
 	}
 
-	return triggers, dampeners
+	return nil, nil
+}
+
+func hasAnyChecksums(analysis *Analysis) bool {
+	return len(analysis.Sha256sums) > 0 || len(analysis.Sha512sums) > 0 || len(analysis.Md5sums) > 0
+}
+
+func hasSkipChecksum(checksumSets ...[]string) bool {
+	for _, sums := range checksumSets {
+		for _, s := range sums {
+			if strings.EqualFold(strings.Trim(s, `'"`), "SKIP") {
+				return true
+			}
+		}
+	}
+	return false
 }
