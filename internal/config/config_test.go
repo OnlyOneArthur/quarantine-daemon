@@ -113,7 +113,6 @@ threshold_score = 90
 	if cfg.Quarantine.ThresholdScore != 90 {
 		t.Errorf("expected threshold_score 90, got %d", cfg.Quarantine.ThresholdScore)
 	}
-	// Defaults preserved
 	if cfg.Binary.MaxScanSizeMB != 64 {
 		t.Errorf("expected default MaxScanSizeMB 64, got %d", cfg.Binary.MaxScanSizeMB)
 	}

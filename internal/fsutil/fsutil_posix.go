@@ -36,7 +36,6 @@ func OpenSafe(path string) (*SafeFile, error) {
 		return nil, fmt.Errorf("%w: %s (mode: %o)", ErrNotRegularFile, cleanPath, st.Mode)
 	}
 
-	// Restore blocking mode for regular file reads
 	if flags, err := unix.FcntlInt(uintptr(fd), unix.F_GETFL, 0); err == nil {
 		_, _ = unix.FcntlInt(uintptr(fd), unix.F_SETFL, flags&^unix.O_NONBLOCK)
 	}

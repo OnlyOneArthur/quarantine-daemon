@@ -734,7 +734,6 @@ func TestTriagePKGBUILD_InstallScriptTraversalBlocked(t *testing.T) {
 		t.Fatalf("write evil install: %v", err)
 	}
 
-	// 1. Directory traversal via relative path ../
 	pkgPath1 := filepath.Join(tmpDir, "PKGBUILD")
 	relPath, err := filepath.Rel(tmpDir, outsideInstallPath)
 	if err != nil {
@@ -753,7 +752,6 @@ func TestTriagePKGBUILD_InstallScriptTraversalBlocked(t *testing.T) {
 	// Crucially, outside install analysis must NOT be populated
 	// Because traversal was rejected!
 
-	// 2. Symlink inside PKGBUILD dir pointing outside
 	symlinkInstall := filepath.Join(tmpDir, "symlinked.install")
 	if err := os.Symlink(outsideInstallPath, symlinkInstall); err != nil {
 		t.Fatalf("symlink: %v", err)

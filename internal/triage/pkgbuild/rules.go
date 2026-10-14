@@ -470,8 +470,8 @@ func checkStmtRedirs(stmt *syntax.Stmt, scope string, triggers *[]ThreatTrigger,
 	}
 }
 
-func checkPathTarget(w *syntax.Word, rawPath string, line int, scope string, triggers *[]ThreatTrigger, addDampener func(string)) {
-	if HasStagingVariable(w) || HasStagingPrefix(rawPath) {
+func checkPathTarget(_ *syntax.Word, rawPath string, line int, scope string, triggers *[]ThreatTrigger, addDampener func(string)) {
+	if HasStagingPrefix(rawPath) {
 		resolved, within := stagingTarget(rawPath)
 		if within {
 			addDampener("packaging_staging_dampener (path within packaging staging variables)")
@@ -655,18 +655,13 @@ func collectPipelineStages(node syntax.Node) []*syntax.CallExpr {
 	return stages
 }
 
-func checkCmdSubst(subst *syntax.CmdSubst, ancestors []syntax.Node, scope string, triggers *[]ThreatTrigger) {
-	if !cmdSubstOutputExecuted(ancestors) {
-		return
-	}
-	line := int(subst.Pos().Line())
+func hasNetworkTool(node syntax.Node) bool {
 	foundNet := false
-
-	syntax.Walk(subst, func(node syntax.Node) bool {
-		if node == nil {
+	syntax.Walk(node, func(n syntax.Node) bool {
+		if n == nil {
 			return false
 		}
-		if call, ok := node.(*syntax.CallExpr); ok {
+		if call, ok := n.(*syntax.CallExpr); ok {
 			cmd, _ := getCallCommand(call)
 			if isNetworkTool(cmd) {
 				foundNet = true
@@ -675,18 +670,23 @@ func checkCmdSubst(subst *syntax.CmdSubst, ancestors []syntax.Node, scope string
 		}
 		return true
 	})
+	return foundNet
+}
 
-	if foundNet {
-		*triggers = append(*triggers, ThreatTrigger{
-			Category:    CategoryRemoteExecution,
-			Name:        "cmdsubst_network_download",
-			Description: "Command substitution executing network download",
-			ScoreWeight: 45,
-			Line:        line,
-			Scope:       scope,
-		})
-		appendScopeNetworkExecution(scope, line, triggers)
+func checkCmdSubst(subst *syntax.CmdSubst, ancestors []syntax.Node, scope string, triggers *[]ThreatTrigger) {
+	if !cmdSubstOutputExecuted(ancestors) || !hasNetworkTool(subst) {
+		return
 	}
+	line := int(subst.Pos().Line())
+	*triggers = append(*triggers, ThreatTrigger{
+		Category:    CategoryRemoteExecution,
+		Name:        "cmdsubst_network_download",
+		Description: "Command substitution executing network download",
+		ScoreWeight: 45,
+		Line:        line,
+		Scope:       scope,
+	})
+	appendScopeNetworkExecution(scope, line, triggers)
 }
 
 // checkProcSubst flags Bash process substitution that feeds a network download
@@ -695,60 +695,31 @@ func checkCmdSubst(subst *syntax.CmdSubst, ancestors []syntax.Node, scope string
 // as a /dev/fd path argument rather than captured stdout, so the cmdsubst rules
 // never see it.
 func checkProcSubst(ps *syntax.ProcSubst, ancestors []syntax.Node, scope string, triggers *[]ThreatTrigger) {
-	if ps == nil || ps.Op != syntax.CmdIn {
+	if ps == nil || ps.Op != syntax.CmdIn || !procSubstOutputExecuted(ancestors) || !hasNetworkTool(ps) {
 		return
 	}
-
-	// Only a security concern when the substitution output (a /dev/fd path) is
-	// handed to an interpreter that executes it. Benign uses such as
-	// `sha256sum <(curl ...)` read the path as a file argument and are ignored.
-	if !procSubstOutputExecuted(ancestors) {
-		return
-	}
-
-	foundNet := false
-	syntax.Walk(ps, func(node syntax.Node) bool {
-		if node == nil {
-			return false
-		}
-		if call, ok := node.(*syntax.CallExpr); ok {
-			cmd, _ := getCallCommand(call)
-			if isNetworkTool(cmd) {
-				foundNet = true
-				return false
-			}
-		}
-		return true
+	line := int(ps.Pos().Line())
+	*triggers = append(*triggers, ThreatTrigger{
+		Category:    CategoryRemoteExecution,
+		Name:        "procsubst_network_execution",
+		Description: "Process substitution feeding network download into interpreter",
+		ScoreWeight: 45,
+		Line:        line,
+		Scope:       scope,
 	})
-
-	if foundNet {
-		*triggers = append(*triggers, ThreatTrigger{
-			Category:    CategoryRemoteExecution,
-			Name:        "procsubst_network_execution",
-			Description: "Process substitution feeding network download into interpreter",
-			ScoreWeight: 45,
-			Line:        int(ps.Pos().Line()),
-			Scope:       scope,
-		})
-		appendScopeNetworkExecution(scope, int(ps.Pos().Line()), triggers)
-	}
+	appendScopeNetworkExecution(scope, line, triggers)
 }
 
 // procSubstOutputExecuted reports whether the process substitution's output is
 // passed to a shell interpreter, `source`, or `eval` as an argument.
 func procSubstOutputExecuted(ancestors []syntax.Node) bool {
-	var call *syntax.CallExpr
 	for i := len(ancestors) - 1; i >= 0; i-- {
-		if c, ok := ancestors[i].(*syntax.CallExpr); ok {
-			call = c
-			break
+		if call, ok := ancestors[i].(*syntax.CallExpr); ok {
+			cmd, _ := getCallCommand(call)
+			return isShell(cmd) || cmd == "source" || cmd == "." || cmd == "eval"
 		}
 	}
-	if call == nil {
-		return false
-	}
-	cmd, _ := getCallCommand(call)
-	return isShell(cmd) || cmd == "source" || cmd == "." || cmd == "eval"
+	return false
 }
 
 func cmdSubstOutputExecuted(ancestors []syntax.Node) bool {

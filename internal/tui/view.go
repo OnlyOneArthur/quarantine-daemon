@@ -413,92 +413,58 @@ func statBlock(label, value string, st lipgloss.Style) string {
 	return labelStyle.Render(label) + "\n" + st.Bold(true).Render(value)
 }
 
-// vaultField is one column of the vault table.
-type vaultField int
+type vaultColumn struct {
+	title string
+	width int
+	right bool
+	cell  func(it *quarantine.ItemMetadata, m *Model, w int) (string, lipgloss.Style)
+}
 
-const (
-	fieldID vaultField = iota
-	fieldVerdict
-	fieldScore
-	fieldPath
-	fieldQuarantined
-	fieldSize
-	fieldPKG
-)
+func vaultColumns(width int) []vaultColumn {
+	idCol := vaultColumn{title: "ID", width: 8, cell: func(it *quarantine.ItemMetadata, _ *Model, _ int) (string, lipgloss.Style) {
+		return shortID(it.ID), lipgloss.NewStyle()
+	}}
+	verdictCol := vaultColumn{title: "VERDICT", width: 12, cell: func(it *quarantine.ItemMetadata, m *Model, _ int) (string, lipgloss.Style) {
+		st := lipgloss.NewStyle().Foreground(m.severityColor(it.Score))
+		if it.Score >= binary.AlertScoreThreshold {
+			st = st.Bold(true)
+		}
+		return m.verdictFor(it.Score), st
+	}}
+	scoreCol := vaultColumn{title: "SCORE", width: 5, right: true, cell: func(it *quarantine.ItemMetadata, m *Model, _ int) (string, lipgloss.Style) {
+		return fmt.Sprintf("%d", it.Score), lipgloss.NewStyle().Foreground(m.severityColor(it.Score))
+	}}
+	pathCol := vaultColumn{title: "ORIGINAL PATH", width: 0, cell: func(it *quarantine.ItemMetadata, _ *Model, w int) (string, lipgloss.Style) {
+		return shortPath(it.OriginalPath, w), lipgloss.NewStyle()
+	}}
+	timeCol := vaultColumn{title: "QUARANTINED", width: 19, cell: func(it *quarantine.ItemMetadata, _ *Model, _ int) (string, lipgloss.Style) {
+		return it.QuarantinedAt.Format("2006-01-02 15:04:05"), lipgloss.NewStyle()
+	}}
+	sizeCol := vaultColumn{title: "SIZE", width: 9, right: true, cell: func(it *quarantine.ItemMetadata, _ *Model, _ int) (string, lipgloss.Style) {
+		return humanBytes(it.Size), lipgloss.NewStyle()
+	}}
+	pkgCol := vaultColumn{title: "PKG", width: 3, cell: func(it *quarantine.ItemMetadata, _ *Model, _ int) (string, lipgloss.Style) {
+		return pkgFlag(it.IsPKGBUILD), lipgloss.NewStyle()
+	}}
 
-// vaultFields returns the columns that fit width, dropping the least important
-// first: PKG below 88, SIZE and QUARANTINED below 76, VERDICT below 60.
-func vaultFields(width int) []vaultField {
 	switch {
 	case width >= 88:
-		return []vaultField{fieldID, fieldVerdict, fieldScore, fieldPath, fieldQuarantined, fieldSize, fieldPKG}
+		return []vaultColumn{idCol, verdictCol, scoreCol, pathCol, timeCol, sizeCol, pkgCol}
 	case width >= 76:
-		return []vaultField{fieldID, fieldVerdict, fieldScore, fieldPath, fieldQuarantined, fieldSize}
+		return []vaultColumn{idCol, verdictCol, scoreCol, pathCol, timeCol, sizeCol}
 	case width >= 60:
-		return []vaultField{fieldID, fieldVerdict, fieldScore, fieldPath}
+		return []vaultColumn{idCol, verdictCol, scoreCol, pathCol}
 	default:
-		return []vaultField{fieldID, fieldScore, fieldPath}
+		return []vaultColumn{idCol, scoreCol, pathCol}
 	}
 }
 
-func (f vaultField) title() string {
-	switch f {
-	case fieldID:
-		return "ID"
-	case fieldVerdict:
-		return "VERDICT"
-	case fieldScore:
-		return "SCORE"
-	case fieldPath:
-		return "ORIGINAL PATH"
-	case fieldQuarantined:
-		return "QUARANTINED"
-	case fieldSize:
-		return "SIZE"
-	default:
-		return "PKG"
-	}
-}
-
-// width is the fixed column width; the path column is flexible and reports 0.
-func (f vaultField) width() int {
-	switch f {
-	case fieldID:
-		return 8
-	case fieldVerdict:
-		return 12
-	case fieldScore:
-		return 5
-	case fieldQuarantined:
-		return 19
-	case fieldSize:
-		return 9
-	case fieldPKG:
-		return 3
-	default:
-		return 0
-	}
-}
-
-func (f vaultField) rightAligned() bool {
-	return f == fieldScore || f == fieldSize
-}
-
-// vaultPathWidth gives the ORIGINAL PATH column all width left after the other
-// columns, the selection marker and the gaps between columns.
-func (m *Model) vaultPathWidth(fields []vaultField) int {
-	used := 2 + len(fields) - 1
-	for _, f := range fields {
-		used += f.width()
+func (m *Model) vaultPathWidth(cols []vaultColumn) int {
+	used := 2 + len(cols) - 1
+	for _, c := range cols {
+		used += c.width
 	}
 	return max(minPathWidth, m.bodyWidth()-used)
-}
-
-func columnWidth(f vaultField, pathW int) int {
-	if f == fieldPath {
-		return pathW
-	}
-	return f.width()
 }
 
 func (m *Model) renderVault() string {
@@ -523,17 +489,21 @@ func (m *Model) renderVault() string {
 		return b.String()
 	}
 
-	fields := vaultFields(m.bodyWidth())
-	pathW := m.vaultPathWidth(fields)
-	cells := make([]string, 0, len(fields))
-	for _, f := range fields {
-		cells = append(cells, padCell(f.title(), columnWidth(f, pathW), f.rightAligned()))
+	cols := vaultColumns(m.bodyWidth())
+	pathW := m.vaultPathWidth(cols)
+	cells := make([]string, 0, len(cols))
+	for _, c := range cols {
+		w := c.width
+		if w == 0 {
+			w = pathW
+		}
+		cells = append(cells, padCell(c.title, w, c.right))
 	}
 	b.WriteString("  " + labelStyle.Bold(true).Render(strings.Join(cells, " ")) + "\n")
 	b.WriteString(ruleStyle.Render(strings.Repeat("─", m.bodyWidth())) + "\n")
 
 	for i := m.offset; i < end; i++ {
-		b.WriteString(m.renderVaultRow(m.items[i], fields, pathW, i == m.cursor) + "\n")
+		b.WriteString(m.renderVaultRow(m.items[i], cols, pathW, i == m.cursor) + "\n")
 	}
 	if end < len(m.items) {
 		b.WriteString(dimStyle.Render(fmt.Sprintf("... %d more", len(m.items)-end)) + "\n")
@@ -541,16 +511,22 @@ func (m *Model) renderVault() string {
 	return b.String()
 }
 
-func (m *Model) renderVaultRow(item *quarantine.ItemMetadata, fields []vaultField, pathW int, selected bool) string {
+func (m *Model) renderVaultRow(item *quarantine.ItemMetadata, cols []vaultColumn, pathW int, selected bool) string {
 	base := lipgloss.NewStyle()
 	marker := "  "
 	if selected {
 		base = base.Background(colSelBg)
 		marker = base.Foreground(colPrimary).Bold(true).Render("▸ ")
 	}
-	cells := make([]string, 0, len(fields))
-	for _, f := range fields {
-		cells = append(cells, m.renderVaultCell(base, item, f, pathW))
+	cells := make([]string, 0, len(cols))
+	for _, c := range cols {
+		w := c.width
+		if w == 0 {
+			w = pathW
+		}
+		txt, style := c.cell(item, m, w)
+		cellStyle := base.Inherit(style)
+		cells = append(cells, cellStyle.Render(padCell(txt, w, c.right)))
 	}
 	row := marker + strings.Join(cells, base.Render(" "))
 	if selected {
@@ -572,34 +548,6 @@ func (m *Model) severityColor(score int) lipgloss.AdaptiveColor {
 	default:
 		return colMuted
 	}
-}
-
-func (m *Model) renderVaultCell(base lipgloss.Style, item *quarantine.ItemMetadata, f vaultField, pathW int) string {
-	w := columnWidth(f, pathW)
-	style := base
-	var text string
-	switch f {
-	case fieldID:
-		text = shortID(item.ID)
-	case fieldVerdict:
-		text = m.verdictFor(item.Score)
-		style = style.Foreground(m.severityColor(item.Score))
-		if item.Score >= binary.AlertScoreThreshold {
-			style = style.Bold(true)
-		}
-	case fieldScore:
-		text = fmt.Sprintf("%d", item.Score)
-		style = style.Foreground(m.severityColor(item.Score))
-	case fieldPath:
-		text = shortPath(item.OriginalPath, w)
-	case fieldQuarantined:
-		text = item.QuarantinedAt.Format("2006-01-02 15:04:05")
-	case fieldSize:
-		text = humanBytes(item.Size)
-	case fieldPKG:
-		text = pkgFlag(item.IsPKGBUILD)
-	}
-	return style.Render(padCell(text, w, f.rightAligned()))
 }
 
 // shortPath fits p into width cells. Too-long paths become ".../<parent>/<base>";

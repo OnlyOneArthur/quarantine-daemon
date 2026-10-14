@@ -200,6 +200,28 @@ func parseRawELFHeaders(data []byte, analysis *ELFAnalysis) error {
 		return errors.New("unknown ELF endianness")
 	}
 
+	processProgHeader := func(pType, pFlags uint32, pOffset, pFilesz uint64) {
+		switch pType {
+		case 1: // PT_LOAD
+			analysis.HasValidPTLoad = true
+
+			if pFlags&1 != 0 && !analysis.TextSectionFound { // PF_X
+				if pFilesz > 0 && pOffset <= uint64(len(data)) && pFilesz <= uint64(len(data))-pOffset {
+					analysis.TextEntropy = entropy.Calculate(data[pOffset : pOffset+pFilesz])
+					analysis.TextSectionFound = true
+				}
+			}
+
+			if (pFlags & 3) == 3 { // PF_X | PF_W
+				analysis.HasRWXSegments = true
+			}
+		case 0x6474e551: // PT_GNU_STACK
+			if pFlags&1 != 0 { // PF_X
+				analysis.HasExecutableStack = true
+			}
+		}
+	}
+
 	switch eiClass {
 	case 1: // 32-bit
 		if len(data) < 52 {
@@ -224,34 +246,12 @@ func parseRawELFHeaders(data []byte, analysis *ELFAnalysis) error {
 				pOffset := uint64(byteOrder.Uint32(data[off+4 : off+8]))
 				pFilesz := uint64(byteOrder.Uint32(data[off+16 : off+20]))
 				pFlags := byteOrder.Uint32(data[off+24 : off+28])
-
-				switch pType {
-				case 1: // PT_LOAD
-					analysis.HasValidPTLoad = true
-
-					if pFlags&1 != 0 && !analysis.TextSectionFound { // PF_X
-						if pFilesz > 0 && pOffset <= uint64(len(data)) && pFilesz <= uint64(len(data))-pOffset {
-							analysis.TextEntropy = entropy.Calculate(data[pOffset : pOffset+pFilesz])
-							analysis.TextSectionFound = true
-						}
-					}
-
-					if (pFlags & 3) == 3 { // PF_X | PF_W
-						analysis.HasRWXSegments = true
-					}
-				case 0x6474e551: // PT_GNU_STACK
-					if pFlags&1 != 0 { // PF_X
-						analysis.HasExecutableStack = true
-					}
-				}
+				processProgHeader(pType, pFlags, pOffset, pFilesz)
 			}
 		}
 
-		// Check if section header table is corrupted/missing despite valid PT_LOAD
-		if analysis.HasValidPTLoad {
-			if sectionTableInvalid(shoff, shnum, shentsize, len(data)) {
-				analysis.CorruptedSectionHeaders = true
-			}
+		if analysis.HasValidPTLoad && sectionTableInvalid(shoff, shnum, shentsize, len(data)) {
+			analysis.CorruptedSectionHeaders = true
 		}
 
 	case 2: // 64-bit
@@ -277,34 +277,12 @@ func parseRawELFHeaders(data []byte, analysis *ELFAnalysis) error {
 				pFlags := byteOrder.Uint32(data[off+4 : off+8])
 				pOffset := byteOrder.Uint64(data[off+8 : off+16])
 				pFilesz := byteOrder.Uint64(data[off+32 : off+40])
-
-				switch pType {
-				case 1: // PT_LOAD
-					analysis.HasValidPTLoad = true
-
-					if pFlags&1 != 0 && !analysis.TextSectionFound { // PF_X
-						if pFilesz > 0 && pOffset <= uint64(len(data)) && pFilesz <= uint64(len(data))-pOffset {
-							analysis.TextEntropy = entropy.Calculate(data[pOffset : pOffset+pFilesz])
-							analysis.TextSectionFound = true
-						}
-					}
-
-					if (pFlags & 3) == 3 { // PF_X | PF_W
-						analysis.HasRWXSegments = true
-					}
-				case 0x6474e551: // PT_GNU_STACK
-					if pFlags&1 != 0 { // PF_X
-						analysis.HasExecutableStack = true
-					}
-				}
+				processProgHeader(pType, pFlags, pOffset, pFilesz)
 			}
 		}
 
-		// Check if section header table is corrupted/missing despite valid PT_LOAD
-		if analysis.HasValidPTLoad {
-			if sectionTableInvalid(shoff, shnum, shentsize, len(data)) {
-				analysis.CorruptedSectionHeaders = true
-			}
+		if analysis.HasValidPTLoad && sectionTableInvalid(shoff, shnum, shentsize, len(data)) {
+			analysis.CorruptedSectionHeaders = true
 		}
 
 	default:

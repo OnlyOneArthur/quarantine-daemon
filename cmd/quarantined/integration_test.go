@@ -120,7 +120,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		}
 	}()
 
-	// Wait for IPC socket to become dialable.
 	dialDeadline := time.Now().Add(3 * time.Second)
 	for {
 		c, dialErr := net.DialTimeout("unix", sockPath, 50*time.Millisecond)
@@ -143,12 +142,10 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 	rpcCtx, rpcCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer rpcCancel()
 
-	// 1. Verify Ping
 	if err := client.Ping(rpcCtx); err != nil {
 		t.Fatalf("client.Ping failed: %v", err)
 	}
 
-	// 2. Drop clean file -> pipeline scans, leaves file alone (PASS/ALERT), stats increment scanned.
 	cleanContent := []byte("harmless text data from benign author\n")
 	cleanPath := filepath.Join(watchDir, "clean_doc.txt")
 	if err := os.WriteFile(cleanPath, cleanContent, 0644); err != nil {
@@ -163,7 +160,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("timed out waiting for clean file to be scanned (scannedCount=%d)", p.scanned.Load())
 	}
 
-	// Clean file must remain untouched on disk.
 	cleanGot, err := os.ReadFile(cleanPath)
 	if err != nil {
 		t.Fatalf("read clean file: %v", err)
@@ -180,7 +176,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("expected 0 quarantined items, got %d", st.QuarantineCount)
 	}
 
-	// 3. Drop malicious PKGBUILD -> isolates, sets chmod 0000, generates .meta.json sidecar, replaces with stub.
 	pkgbuildPath := filepath.Join(watchDir, "PKGBUILD")
 	if err := os.WriteFile(pkgbuildPath, []byte(maliciousPKGBUILD), 0644); err != nil {
 		t.Fatalf("write malicious PKGBUILD: %v", err)
@@ -194,7 +189,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("timed out waiting for malicious PKGBUILD to be quarantined (quarantined=%d)", p.quarantined.Load())
 	}
 
-	// Verify PKGBUILD at watch path was replaced with blocking decoy stub.
 	stubContent, err := os.ReadFile(pkgbuildPath)
 	if err != nil {
 		t.Fatalf("read stub: %v", err)
@@ -203,7 +197,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("expected decoy stub at watched path, got: %s", string(stubContent))
 	}
 
-	// 4. Drop malicious binary fixture -> moves file completely to vault, 0000 perm, meta sidecar.
 	fixturePath := filepath.Join("..", "..", "testdata", "binary", "elf_malicious_combined")
 	maliciousBinBytes, err := os.ReadFile(fixturePath)
 	if err != nil {
@@ -222,12 +215,10 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("timed out waiting for malicious binary to be quarantined (quarantined=%d)", p.quarantined.Load())
 	}
 
-	// Original malicious binary must be removed from watchDir.
 	if _, err := os.Stat(binTarget); !os.IsNotExist(err) {
 		t.Fatalf("expected original binary to be removed from watch dir, err=%v", err)
 	}
 
-	// 5. Connect via IPC client and test ListVault, InspectItem, Vault file permissions.
 	vaultItems, err := client.ListVault(rpcCtx)
 	if err != nil {
 		t.Fatalf("client.ListVault: %v", err)
@@ -248,7 +239,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("expected both PKGBUILD and binary items in vault, got: %+v", vaultItems)
 	}
 
-	// Verify permissions on isolated vault artifacts are neutralized (0000).
 	binArtifactPath := filepath.Join(vaultDir, binMeta.ID)
 	binArtifactInfo, err := os.Stat(binArtifactPath)
 	if err != nil {
@@ -258,7 +248,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("expected neutralized 0000 permissions on vault artifact, got: %o", binArtifactInfo.Mode().Perm())
 	}
 
-	// Verify sidecar .meta.json exists on disk and has correct score.
 	binSidecarPath := filepath.Join(vaultDir, binMeta.ID+".meta.json")
 	if _, err := os.Stat(binSidecarPath); err != nil {
 		t.Fatalf("expected sidecar meta file %s: %v", binSidecarPath, err)
@@ -270,7 +259,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatal("expected triggers recorded in binary metadata")
 	}
 
-	// Verify InspectItem matches metadata.
 	inspected, err := client.InspectItem(rpcCtx, binMeta.ID)
 	if err != nil {
 		t.Fatalf("client.InspectItem: %v", err)
@@ -279,14 +267,11 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("inspected metadata mismatch: got %+v, want %+v", inspected, binMeta)
 	}
 
-	// Inspecting non-existent ID returns not found error.
 	_, err = client.InspectItem(rpcCtx, "nonexistent-hash")
 	if !ipc.IsNotFound(err) {
 		t.Fatalf("expected IsNotFound error for nonexistent ID, got %v", err)
 	}
 
-	// 6. Test RestoreItem: restores safely with O_NOFOLLOW|O_EXCL|O_CREAT and restores original mode.
-	// 6a. Attempt to restore over a symlink destination must be rejected.
 	dummyTarget := filepath.Join(root, "target.txt")
 	_ = os.WriteFile(dummyTarget, []byte("target"), 0644)
 	symlinkDest := filepath.Join(root, "symlink_dest")
@@ -297,7 +282,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatal("expected RestoreItem to reject symlink destination, but it succeeded")
 	}
 
-	// 6b. Restore to clean non-existent path.
 	restoreDest := filepath.Join(root, "restored_binary")
 	if err := client.RestoreItem(rpcCtx, binMeta.ID, restoreDest); err != nil {
 		t.Fatalf("client.RestoreItem: %v", err)
@@ -318,7 +302,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("expected restored permissions 0755, got: %o", restoredInfo.Mode().Perm())
 	}
 
-	// Verify vault binary artifact and sidecar are removed after restore.
 	if _, err := os.Stat(binArtifactPath); !os.IsNotExist(err) {
 		t.Fatalf("expected vault artifact %s to be unlinked after restore", binArtifactPath)
 	}
@@ -326,7 +309,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("expected sidecar %s to be unlinked after restore", binSidecarPath)
 	}
 
-	// 7. Test PurgeItem: permanently removes artifact and sidecar.
 	pkgArtifactPath := filepath.Join(vaultDir, pkgMeta.ID)
 	pkgSidecarPath := filepath.Join(vaultDir, pkgMeta.ID+".meta.json")
 
@@ -340,7 +322,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("expected purged sidecar %s to be removed", pkgSidecarPath)
 	}
 
-	// Vault should now be empty.
 	remaining, err := client.ListVault(rpcCtx)
 	if err != nil {
 		t.Fatalf("ListVault after purge: %v", err)
@@ -349,7 +330,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("expected empty vault after purge, got %d items", len(remaining))
 	}
 
-	// 8. Test AddWatchPath: dynamically registers new watch directory and scans dropped threats.
 	watchDir2 := filepath.Join(root, "watch2")
 	if err := os.MkdirAll(watchDir2, 0700); err != nil {
 		t.Fatalf("mkdir watchDir2: %v", err)
@@ -358,7 +338,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("client.AddWatchPath: %v", err)
 	}
 
-	// Status reflects updated watch paths.
 	st, err = client.GetStatus(rpcCtx)
 	if err != nil {
 		t.Fatalf("GetStatus: %v", err)
@@ -374,7 +353,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("expected watchDir2 in Status.WatchPaths, got: %v", st.WatchPaths)
 	}
 
-	// Drop malicious payload into dynamically added watch directory.
 	target2 := filepath.Join(watchDir2, "injected_rootkit")
 	if err := os.WriteFile(target2, maliciousBinBytes, 0755); err != nil {
 		t.Fatalf("write payload to watchDir2: %v", err)
@@ -392,7 +370,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("expected file in watchDir2 to be quarantined and removed")
 	}
 
-	// 9. Verify symlink handling: symlink pointing outside is safely handled without following.
 	outsideSecret := filepath.Join(root, "outside_secret.txt")
 	secretData := []byte("confidential root configuration")
 	if err := os.WriteFile(outsideSecret, secretData, 0600); err != nil {
@@ -404,7 +381,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("create symlink to secret: %v", err)
 	}
 
-	// Direct pipeline invocation with symlink must reject with ErrSymlinkNotAllowed
 	_, symlinkErr := p.handlePath(symlinkAttack)
 	if symlinkErr == nil {
 		t.Fatal("expected pipeline.handlePath to reject symlink, but it succeeded")
@@ -413,7 +389,6 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 		t.Fatalf("expected ErrSymlinkNotAllowed in error message, got: %v", symlinkErr)
 	}
 
-	// The outside secret file must remain untouched and un-quarantined.
 	secretGot, err := os.ReadFile(outsideSecret)
 	if err != nil {
 		t.Fatalf("read outside secret: %v", err)

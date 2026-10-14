@@ -235,7 +235,6 @@ func TestExecutableStackAndRWX(t *testing.T) {
 }
 
 func TestEntropyAndUPX(t *testing.T) {
-	// Create high entropy payload
 	randomBytes := make([]byte, 4096)
 	if _, err := rand.Read(randomBytes); err != nil {
 		t.Fatalf("failed to read random bytes: %v", err)
@@ -282,9 +281,6 @@ func TestEntropyAndUPX(t *testing.T) {
 
 func TestCorrelatedMultiCategoryQuarantine(t *testing.T) {
 	// Threat binary with triggers in 3 independent categories:
-	// 1. Structure: corrupted section headers (+40)
-	// 2. Capabilities: memfd_create (+20), ptrace (+20)
-	// 3. IOC: /dev/tcp/ reverse shell string (+35)
 	// Total score = 40 + 20 + 20 + 35 = 115 -> clamped to 100.
 	// Categories hit >= 2 -> QUARANTINE!
 	phdrs := []progHeader{

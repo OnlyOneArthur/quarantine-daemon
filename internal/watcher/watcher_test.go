@@ -22,16 +22,13 @@ func TestRecursiveWatcherSubdirRegistration(t *testing.T) {
 	}
 	defer w.Close()
 
-	// Create a subdirectory inside tempDir
 	subDir := filepath.Join(tempDir, "pkg-build-aur")
 	if err := os.Mkdir(subDir, 0755); err != nil {
 		t.Fatalf("failed to create subdir: %v", err)
 	}
 
-	// Give watcher a moment to receive Create event on directory and register it
 	time.Sleep(100 * time.Millisecond)
 
-	// Verify subdirectory is in watched dirs
 	watched := w.WatchedDirectories()
 	found := false
 	for _, d := range watched {
@@ -44,7 +41,6 @@ func TestRecursiveWatcherSubdirRegistration(t *testing.T) {
 		t.Fatalf("expected subDir %s to be in watched dirs: %v", subDir, watched)
 	}
 
-	// Create a file inside the newly watched subDir
 	testFile := filepath.Join(subDir, "payload.bin")
 	if err := os.WriteFile(testFile, []byte("test content"), 0644); err != nil {
 		t.Fatalf("failed to write test file: %v", err)
@@ -120,7 +116,6 @@ func TestIgnoredExtensions(t *testing.T) {
 	}
 	defer w.Close()
 
-	// Write ignored files
 	ignored1 := filepath.Join(tempDir, "download.crdownload")
 	ignored2 := filepath.Join(tempDir, "partial.part")
 	ignored3 := filepath.Join(tempDir, "temp.tmp")
@@ -129,7 +124,6 @@ func TestIgnoredExtensions(t *testing.T) {
 	_ = os.WriteFile(ignored2, []byte("tmp2"), 0644)
 	_ = os.WriteFile(ignored3, []byte("tmp3"), 0644)
 
-	// Write one valid file
 	validFile := filepath.Join(tempDir, "valid.bin")
 	_ = os.WriteFile(validFile, []byte("valid"), 0644)
 
@@ -236,7 +230,6 @@ func TestImmediatePKGBUILD(t *testing.T) {
 func TestReconcileWalk(t *testing.T) {
 	tempDir := t.TempDir()
 
-	// Create subdirectories and files prior to walk
 	nestedDir := filepath.Join(tempDir, "a", "b")
 	if err := os.MkdirAll(nestedDir, 0755); err != nil {
 		t.Fatalf("failed to mkdir: %v", err)
@@ -299,7 +292,6 @@ func TestQueueOverflowReconciliation(t *testing.T) {
 	}
 	defer w.Close()
 
-	// Create a file in tempDir without giving time to watch or simulating missed event
 	fileX := filepath.Join(tempDir, "missed_during_overflow.bin")
 	if err := os.WriteFile(fileX, []byte("overflow content"), 0644); err != nil {
 		t.Fatalf("failed to write file: %v", err)

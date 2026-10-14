@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 )
 
@@ -17,20 +18,22 @@ func checkRestoreParent(path string) error {
 	if err != nil {
 		return err
 	}
-	current := string(filepath.Separator)
-	if fi, err := os.Lstat(current); err != nil {
-		return fmt.Errorf("inspect %s: %w", current, err)
-	} else if err := checkDir(current, fi); err != nil {
-		return err
+
+	current := "/"
+	parts := strings.FieldsFunc(abs, func(r rune) bool { return r == '/' })
+	segments := make([]string, 0, len(parts)+1)
+	segments = append(segments, "/")
+	for _, p := range parts {
+		current = filepath.Join(current, p)
+		segments = append(segments, current)
 	}
 
-	for _, part := range splitPath(abs) {
-		current = filepath.Join(current, part)
-		fi, err := os.Lstat(current)
+	for _, seg := range segments {
+		fi, err := os.Lstat(seg)
 		if err != nil {
-			return fmt.Errorf("inspect %s: %w", current, err)
+			return fmt.Errorf("inspect %s: %w", seg, err)
 		}
-		if err := checkDir(current, fi); err != nil {
+		if err := checkDir(seg, fi); err != nil {
 			return err
 		}
 	}
@@ -53,21 +56,4 @@ func checkDir(path string, fi os.FileInfo) error {
 		}
 	}
 	return nil
-}
-
-func splitPath(path string) []string {
-	volume := filepath.VolumeName(path)
-	rest := path[len(volume):]
-	parts := []string{}
-	for rest != "" && rest != string(filepath.Separator) {
-		rest = filepath.Clean(rest)
-		part := filepath.Base(rest)
-		parts = append([]string{part}, parts...)
-		parent := filepath.Dir(rest)
-		if parent == rest {
-			break
-		}
-		rest = parent
-	}
-	return parts
 }

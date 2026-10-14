@@ -165,7 +165,6 @@ func TestOversizeFileIsSkipped(t *testing.T) {
 	p, _, cfg, root := newTestPipeline(t)
 	cfg.Binary.MaxScanSizeMB = 1
 
-	// One byte over the 1 MiB scan limit.
 	big := bytes.Repeat([]byte("A"), 1024*1024+1)
 	path := writeFixture(t, filepath.Join(root, "watch"), "big.bin", big)
 

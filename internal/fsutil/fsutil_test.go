@@ -120,7 +120,6 @@ func TestOpenSafeCreate(t *testing.T) {
 	}
 	_ = f.Close()
 
-	// Second create should fail (O_EXCL)
 	_, err = OpenSafeCreate(filePath, 0600)
 	if err == nil {
 		t.Fatalf("expected OpenSafeCreate to fail on existing file")

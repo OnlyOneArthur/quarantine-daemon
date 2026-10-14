@@ -7,43 +7,7 @@ import (
 	"strings"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
-	"mvdan.cc/sh/v3/syntax"
 )
-
-// HasStagingVariable returns true if a syntax.Word references $pkgdir, ${pkgdir}, $srcdir, or ${srcdir}.
-func HasStagingVariable(w *syntax.Word) bool {
-	if w == nil {
-		return false
-	}
-	for _, part := range w.Parts {
-		if checkPartStaging(part) {
-			return true
-		}
-	}
-	return false
-}
-
-func checkPartStaging(part syntax.WordPart) bool {
-	switch p := part.(type) {
-	case *syntax.ParamExp:
-		if p.Param != nil && (p.Param.Value == "pkgdir" || p.Param.Value == "srcdir") {
-			return true
-		}
-	case *syntax.DblQuoted:
-		for _, sub := range p.Parts {
-			if checkPartStaging(sub) {
-				return true
-			}
-		}
-	case *syntax.Lit:
-		val := p.Value
-		if strings.Contains(val, "$pkgdir") || strings.Contains(val, "${pkgdir}") ||
-			strings.Contains(val, "$srcdir") || strings.Contains(val, "${srcdir}") {
-			return true
-		}
-	}
-	return false
-}
 
 // HasStagingPrefix returns true if the raw path string references packaging staging variables.
 func HasStagingPrefix(path string) bool {

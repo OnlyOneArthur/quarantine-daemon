@@ -703,7 +703,6 @@ func TestWritePKGBUILDStubSymlinkAttack(t *testing.T) {
 		t.Fatalf("writePKGBUILDStub failed: %v", err)
 	}
 
-	// Verify victim file was NOT overwritten
 	actualVictim, err := os.ReadFile(victimPath)
 	if err != nil {
 		t.Fatalf("read victim: %v", err)
@@ -712,7 +711,6 @@ func TestWritePKGBUILDStubSymlinkAttack(t *testing.T) {
 		t.Fatalf("victim file was corrupted/overwritten by writePKGBUILDStub!")
 	}
 
-	// Verify PKGBUILD was replaced by stub
 	stubData, err := os.ReadFile(pkgPath)
 	if err != nil {
 		t.Fatalf("read stub: %v", err)
@@ -730,7 +728,6 @@ func TestSweepCorruptMetadataDoesNotFail(t *testing.T) {
 	}
 	defer v.Close()
 
-	// Write valid quarantine item
 	srcPath := filepath.Join(t.TempDir(), "evil.bin")
 	writeFile(t, srcPath, []byte("payload"), 0755)
 	_, err = v.QuarantineFile(srcPath, 95, nil, nil, nil)

@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -523,35 +524,42 @@ func rollbackArtifact(artifactPath, dest string, mode os.FileMode) error {
 	return os.Rename(artifactPath, dest)
 }
 
-func (v *Vault) writeMeta(meta *ItemMetadata) error {
-	data, err := json.MarshalIndent(meta, "", "  ")
+func writeAtomic(dir, pattern, dest string, data []byte, perm os.FileMode) error {
+	tmpFile, err := os.CreateTemp(dir, pattern)
 	if err != nil {
 		return err
 	}
-	tmpFile, err := os.CreateTemp(v.dir, ".tmp-meta-*")
-	if err != nil {
-		return fmt.Errorf("create temp meta: %w", err)
-	}
 	tmpPath := tmpFile.Name()
-	if _, err := tmpFile.Write(data); err != nil {
+	cleanup := func() {
 		_ = tmpFile.Close()
 		_ = os.Remove(tmpPath)
+	}
+
+	if _, err := tmpFile.Write(data); err != nil {
+		cleanup()
 		return err
 	}
 	if err := tmpFile.Sync(); err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(tmpPath)
+		cleanup()
 		return err
 	}
 	if err := tmpFile.Close(); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	if err := os.Chmod(tmpPath, 0600); err != nil {
+	if err := os.Chmod(tmpPath, perm); err != nil {
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	return os.Rename(tmpPath, v.metaPath(meta.ID))
+	return os.Rename(tmpPath, dest)
+}
+
+func (v *Vault) writeMeta(meta *ItemMetadata) error {
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeAtomic(v.dir, ".tmp-meta-*", v.metaPath(meta.ID), data, 0600)
 }
 
 func (v *Vault) readMeta(fileName string) (*ItemMetadata, error) {
@@ -586,9 +594,7 @@ func nonNilSlice(s []string) []string {
 	if s == nil {
 		return []string{}
 	}
-	res := make([]string, len(s))
-	copy(res, s)
-	return res
+	return slices.Clone(s)
 }
 
 // isPKGBUILD reports whether path is an Arch build manifest requiring stub neutralization.
@@ -603,37 +609,7 @@ exit 1
 `
 
 func writePKGBUILDStub(path string) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".pkgbuild-stub-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	cleanup := func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-	}
-
-	if _, err := tmp.WriteString(stubBody); err != nil {
-		cleanup()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		cleanup()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		cleanup()
-		return err
-	}
-	if err := os.Chmod(tmpPath, 0755); err != nil {
-		cleanup()
-		return err
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		cleanup()
-		return err
-	}
-	return nil
+	return writeAtomic(filepath.Dir(path), ".pkgbuild-stub-*", path, []byte(stubBody), 0755)
 }
 
 func isHex64(s string) bool {

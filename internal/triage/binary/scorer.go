@@ -137,21 +137,49 @@ func categoriesHit(triggers []ThreatTrigger) []string {
 	return categories
 }
 
-// ScoreELF computes the correlated multi-category threat score for an ELF analysis.
-func ScoreELF(analysis *ELFAnalysis, cfg *config.Config, path string) *TriageResult {
+func resolveThresholds(cfg *config.Config) (entropyThresh float64, quarantineThresh int) {
 	if cfg == nil {
 		cfg = config.DefaultConfig()
 	}
-
-	entropyThreshold := cfg.Binary.EntropyThreshold
-	if entropyThreshold <= 0 {
-		entropyThreshold = 7.3
+	entropyThresh = cfg.Binary.EntropyThreshold
+	if entropyThresh <= 0 {
+		entropyThresh = 7.3
 	}
-
-	quarantineThreshold := cfg.Quarantine.ThresholdScore
-	if quarantineThreshold <= 0 {
-		quarantineThreshold = 85
+	quarantineThresh = cfg.Quarantine.ThresholdScore
+	if quarantineThresh <= 0 {
+		quarantineThresh = 85
 	}
+	return
+}
+
+func finalizeResult(res *TriageResult, isGo, isRust bool, qThresh int) *TriageResult {
+	res.Score, res.Verdict, res.DampenersApplied = calculateCappedScore(res.Triggers, isGo, isRust, qThresh)
+	res.CategoriesHit = categoriesHit(res.Triggers)
+	return res
+}
+
+func appendCommonEntropyAndIOCs(res *TriageResult, upx bool, iocs []string) {
+	if upx {
+		res.Triggers = append(res.Triggers, ThreatTrigger{
+			Category:    CategoryEntropy,
+			Name:        "upx_packed",
+			Description: "Binary packed with UPX packer",
+			ScoreWeight: 30,
+		})
+	}
+	for _, ioc := range iocs {
+		res.Triggers = append(res.Triggers, ThreatTrigger{
+			Category:    CategoryIOC,
+			Name:        "ioc_payload",
+			Description: "Suspicious payload or network IOC pattern detected: " + ioc,
+			ScoreWeight: 35,
+		})
+	}
+}
+
+// ScoreELF computes the correlated multi-category threat score for an ELF analysis.
+func ScoreELF(analysis *ELFAnalysis, cfg *config.Config, path string) *TriageResult {
+	entThresh, qThresh := resolveThresholds(cfg)
 
 	res := &TriageResult{
 		Path:         path,
@@ -161,7 +189,6 @@ func ScoreELF(analysis *ELFAnalysis, cfg *config.Config, path string) *TriageRes
 		IsRustBinary: analysis.IsRustBinary,
 	}
 
-	// --- Category 1: Structure & Header Integrity ---
 	if analysis.CorruptedSectionHeaders && analysis.HasValidPTLoad {
 		res.Triggers = append(res.Triggers, ThreatTrigger{
 			Category:    CategoryStructure,
@@ -170,7 +197,6 @@ func ScoreELF(analysis *ELFAnalysis, cfg *config.Config, path string) *TriageRes
 			ScoreWeight: 40,
 		})
 	}
-
 	if analysis.HasExecutableStack {
 		res.Triggers = append(res.Triggers, ThreatTrigger{
 			Category:    CategoryStructure,
@@ -179,7 +205,6 @@ func ScoreELF(analysis *ELFAnalysis, cfg *config.Config, path string) *TriageRes
 			ScoreWeight: 35,
 		})
 	}
-
 	if analysis.HasRWXSegments {
 		res.Triggers = append(res.Triggers, ThreatTrigger{
 			Category:    CategoryStructure,
@@ -188,9 +213,7 @@ func ScoreELF(analysis *ELFAnalysis, cfg *config.Config, path string) *TriageRes
 			ScoreWeight: 35,
 		})
 	}
-
-	// --- Category 2: Packing & Entropy ---
-	if analysis.TextEntropy > entropyThreshold {
+	if analysis.TextEntropy > entThresh {
 		res.Triggers = append(res.Triggers, ThreatTrigger{
 			Category:    CategoryEntropy,
 			Name:        "high_text_entropy",
@@ -199,16 +222,8 @@ func ScoreELF(analysis *ELFAnalysis, cfg *config.Config, path string) *TriageRes
 		})
 	}
 
-	if analysis.HasUPX {
-		res.Triggers = append(res.Triggers, ThreatTrigger{
-			Category:    CategoryEntropy,
-			Name:        "upx_packed",
-			Description: "Binary packed with UPX packer",
-			ScoreWeight: 30,
-		})
-	}
+	appendCommonEntropyAndIOCs(res, analysis.HasUPX, analysis.SuspiciousIOCs)
 
-	// --- Category 3: High-Risk Capabilities & Injection APIs ---
 	for _, capName := range analysis.SuspiciousCapabilities {
 		switch capName {
 		case "memfd_create", "process_vm_writev", "VirtualAllocEx", "ptrace":
@@ -221,41 +236,12 @@ func ScoreELF(analysis *ELFAnalysis, cfg *config.Config, path string) *TriageRes
 		}
 	}
 
-	// --- Category 4: IOC & Reverse Shell Payloads ---
-	for _, ioc := range analysis.SuspiciousIOCs {
-		res.Triggers = append(res.Triggers, ThreatTrigger{
-			Category:    CategoryIOC,
-			Name:        "ioc_payload",
-			Description: "Suspicious payload or network IOC pattern detected: " + ioc,
-			ScoreWeight: 35,
-		})
-	}
-
-	score, verdict, dampeners := calculateCappedScore(res.Triggers, res.IsGoBinary, res.IsRustBinary, quarantineThreshold)
-	res.Score = score
-	res.Verdict = verdict
-	res.DampenersApplied = dampeners
-
-	res.CategoriesHit = categoriesHit(res.Triggers)
-
-	return res
+	return finalizeResult(res, res.IsGoBinary, res.IsRustBinary, qThresh)
 }
 
 // ScorePE computes the correlated multi-category threat score for a Windows PE binary.
 func ScorePE(analysis *PEAnalysis, cfg *config.Config, path string) *TriageResult {
-	if cfg == nil {
-		cfg = config.DefaultConfig()
-	}
-
-	entropyThreshold := cfg.Binary.EntropyThreshold
-	if entropyThreshold <= 0 {
-		entropyThreshold = 7.3
-	}
-
-	quarantineThreshold := cfg.Quarantine.ThresholdScore
-	if quarantineThreshold <= 0 {
-		quarantineThreshold = 85
-	}
+	entThresh, qThresh := resolveThresholds(cfg)
 
 	res := &TriageResult{
 		Path:    path,
@@ -271,8 +257,7 @@ func ScorePE(analysis *PEAnalysis, cfg *config.Config, path string) *TriageResul
 			ScoreWeight: 35,
 		})
 	}
-
-	if analysis.TextEntropy > entropyThreshold {
+	if analysis.TextEntropy > entThresh {
 		res.Triggers = append(res.Triggers, ThreatTrigger{
 			Category:    CategoryEntropy,
 			Name:        "pe_high_entropy",
@@ -281,14 +266,7 @@ func ScorePE(analysis *PEAnalysis, cfg *config.Config, path string) *TriageResul
 		})
 	}
 
-	if analysis.HasUPX {
-		res.Triggers = append(res.Triggers, ThreatTrigger{
-			Category:    CategoryEntropy,
-			Name:        "upx_packed",
-			Description: "Binary packed with UPX packer",
-			ScoreWeight: 30,
-		})
-	}
+	appendCommonEntropyAndIOCs(res, analysis.HasUPX, analysis.SuspiciousIOCs)
 
 	for _, capName := range analysis.SuspiciousCapabilities {
 		res.Triggers = append(res.Triggers, ThreatTrigger{
@@ -299,40 +277,12 @@ func ScorePE(analysis *PEAnalysis, cfg *config.Config, path string) *TriageResul
 		})
 	}
 
-	for _, ioc := range analysis.SuspiciousIOCs {
-		res.Triggers = append(res.Triggers, ThreatTrigger{
-			Category:    CategoryIOC,
-			Name:        "ioc_payload",
-			Description: "Suspicious payload or network IOC pattern detected: " + ioc,
-			ScoreWeight: 35,
-		})
-	}
-
-	score, verdict, dampeners := calculateCappedScore(res.Triggers, false, false, quarantineThreshold)
-	res.Score = score
-	res.Verdict = verdict
-	res.DampenersApplied = dampeners
-
-	res.CategoriesHit = categoriesHit(res.Triggers)
-
-	return res
+	return finalizeResult(res, false, false, qThresh)
 }
 
 // ScoreMachO computes the threat score for a macOS Mach-O binary.
 func ScoreMachO(analysis *MachOAnalysis, cfg *config.Config, path string) *TriageResult {
-	if cfg == nil {
-		cfg = config.DefaultConfig()
-	}
-
-	entropyThreshold := cfg.Binary.EntropyThreshold
-	if entropyThreshold <= 0 {
-		entropyThreshold = 7.3
-	}
-
-	quarantineThreshold := cfg.Quarantine.ThresholdScore
-	if quarantineThreshold <= 0 {
-		quarantineThreshold = 85
-	}
+	entThresh, qThresh := resolveThresholds(cfg)
 
 	res := &TriageResult{
 		Path:    path,
@@ -348,8 +298,7 @@ func ScoreMachO(analysis *MachOAnalysis, cfg *config.Config, path string) *Triag
 			ScoreWeight: 35,
 		})
 	}
-
-	if analysis.TextEntropy > entropyThreshold {
+	if analysis.TextEntropy > entThresh {
 		res.Triggers = append(res.Triggers, ThreatTrigger{
 			Category:    CategoryEntropy,
 			Name:        "macho_high_entropy",
@@ -358,14 +307,7 @@ func ScoreMachO(analysis *MachOAnalysis, cfg *config.Config, path string) *Triag
 		})
 	}
 
-	if analysis.HasUPX {
-		res.Triggers = append(res.Triggers, ThreatTrigger{
-			Category:    CategoryEntropy,
-			Name:        "upx_packed",
-			Description: "Binary packed with UPX packer",
-			ScoreWeight: 30,
-		})
-	}
+	appendCommonEntropyAndIOCs(res, analysis.HasUPX, analysis.SuspiciousIOCs)
 
 	for _, capName := range analysis.SuspiciousCapabilities {
 		res.Triggers = append(res.Triggers, ThreatTrigger{
@@ -376,23 +318,7 @@ func ScoreMachO(analysis *MachOAnalysis, cfg *config.Config, path string) *Triag
 		})
 	}
 
-	for _, ioc := range analysis.SuspiciousIOCs {
-		res.Triggers = append(res.Triggers, ThreatTrigger{
-			Category:    CategoryIOC,
-			Name:        "ioc_payload",
-			Description: "Suspicious payload or network IOC pattern detected: " + ioc,
-			ScoreWeight: 35,
-		})
-	}
-
-	score, verdict, dampeners := calculateCappedScore(res.Triggers, false, false, quarantineThreshold)
-	res.Score = score
-	res.Verdict = verdict
-	res.DampenersApplied = dampeners
-
-	res.CategoriesHit = categoriesHit(res.Triggers)
-
-	return res
+	return finalizeResult(res, false, false, qThresh)
 }
 
 // TriageBinary analyzes a byte slice of binary or script data, detects format,

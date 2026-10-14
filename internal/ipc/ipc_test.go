@@ -46,7 +46,6 @@ func startServer(t *testing.T, v *quarantine.Vault, provider ipc.StatusProvider)
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Start(ctx) }()
 
-	// Wait for the socket to become dialable.
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		c, err := net.DialTimeout("unix", sock, 50*time.Millisecond)
@@ -337,12 +336,10 @@ func TestStaleSocketRecovery(t *testing.T) {
 	v := newVault(t)
 	sock := shortSocketPath(t)
 
-	// Create a socket file and close the listener without unlinking: a stale socket.
 	ln, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	// Keep the socket file on close so we simulate a genuinely stale socket.
 	ln.(*net.UnixListener).SetUnlinkOnClose(false)
 	if err := ln.Close(); err != nil {
 		t.Fatalf("close listener: %v", err)

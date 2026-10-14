@@ -112,7 +112,6 @@ func TestViewHeadlessLayout(t *testing.T) {
 				f.itemsByID[it.ID] = it
 			}
 
-			// 1. Vault view populated
 			m := connectedModel(t, f)
 			m.pane = paneVault
 			cur, _ := m.Update(tea.WindowSizeMsg{Width: sz.width, Height: sz.height})
@@ -146,7 +145,6 @@ func TestViewHeadlessLayout(t *testing.T) {
 				t.Logf("Eyeball render (100x30 populated vault):\n%s", out)
 			}
 
-			// 2. Empty-vault state
 			fEmpty := newFakeClient()
 			fEmpty.status = f.status
 			fEmpty.items = nil
@@ -160,14 +158,12 @@ func TestViewHeadlessLayout(t *testing.T) {
 				t.Errorf("empty vault message missing:\n%s", outEmpty)
 			}
 
-			// 3. Disconnected state
 			mDisc := NewModel(func() (Client, error) {
 				return nil, errors.New("daemon connection refused")
 			}, "test")
 			mDisc.pane = paneDashboard
 			cur, _ = mDisc.Update(tea.WindowSizeMsg{Width: sz.width, Height: sz.height})
 			mDisc = cur.(*Model)
-			// Trigger reconnect/offline state
 			mDisc.connected = false
 			mDisc.lastErr = errors.New("daemon connection refused")
 			outDisc := mDisc.View()

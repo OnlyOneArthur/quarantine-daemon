@@ -94,7 +94,6 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("listen on %s: %w", s.socketPath, err)
 	}
 
-	// Restrict permissions to owner-only: 0600
 	if err := os.Chmod(s.socketPath, 0600); err != nil {
 		_ = ln.Close()
 		_ = os.Remove(s.socketPath)
@@ -152,7 +151,6 @@ func (s *Server) Start(ctx context.Context) error {
 func (s *Server) prepareSocket() error {
 	if _, err := os.Lstat(s.socketPath); err != nil {
 		if os.IsNotExist(err) {
-			// Ensure parent directory exists
 			dir := filepath.Dir(s.socketPath)
 			if mkErr := os.MkdirAll(dir, 0700); mkErr != nil {
 				return fmt.Errorf("create socket parent dir: %w", mkErr)
@@ -162,14 +160,12 @@ func (s *Server) prepareSocket() error {
 		return fmt.Errorf("stat socket path: %w", err)
 	}
 
-	// Socket file exists: probe if a daemon is running.
 	conn, err := net.DialTimeout("unix", s.socketPath, 200*time.Millisecond)
 	if err == nil {
 		_ = conn.Close()
 		return ErrServerAlreadyRunning
 	}
 
-	// Connection refused or dial error -> stale socket. Clean it up.
 	if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove stale socket: %w", err)
 	}
@@ -207,7 +203,6 @@ func (s *Server) Stop() error {
 		// Stop returns only after all connection goroutines have exited.
 		s.wg.Wait()
 
-		// Remove socket file
 		if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
 			if stopErr == nil {
 				stopErr = err
@@ -242,7 +237,6 @@ func (s *Server) handleConn(conn net.Conn) {
 		s.wg.Done()
 	}()
 
-	// SO_PEERCRED check: caller must match current UID
 	clientUID, err := peerCred(conn)
 	if err != nil {
 		s.writeError(conn, "", "AUTH_ERROR", err.Error())
