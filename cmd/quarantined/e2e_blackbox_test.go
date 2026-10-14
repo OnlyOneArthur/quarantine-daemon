@@ -19,7 +19,7 @@ import (
 func TestLiveBinaryE2E(t *testing.T) {
 	// Build binary
 	binPath := filepath.Join(t.TempDir(), "quarantined")
-	buildCmd := exec.Command("go", "build", "-o", binPath, ".")
+	buildCmd := exec.Command("go", "build", "-buildvcs=false", "-o", binPath, ".")
 	if out, err := buildCmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build failed: %v\n%s", err, string(out))
 	}

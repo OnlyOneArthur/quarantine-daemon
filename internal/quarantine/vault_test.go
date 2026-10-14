@@ -395,6 +395,9 @@ func TestRestorePKGBUILDReplacesStub(t *testing.T) {
 }
 
 func TestRestorePKGBUILDKeepsStubOnFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("skipping DAC permission test when running as root (CAP_DAC_OVERRIDE)")
+	}
 	v, err := New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)

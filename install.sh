@@ -93,8 +93,8 @@ command -v go >/dev/null 2>&1 || die "go not found in PATH; install Go 1.26+ fir
 BUILD_DIR=""
 TMP_REPO=""
 cleanup() {
-    [ -n "$BUILD_DIR" ] && rm -rf "$BUILD_DIR"
-    [ -n "$TMP_REPO" ] && rm -rf "$TMP_REPO"
+    [ -n "$BUILD_DIR" ] && rm -rf "$BUILD_DIR" || true
+    [ -n "$TMP_REPO" ] && rm -rf "$TMP_REPO" || true
 }
 trap cleanup EXIT INT TERM
 
@@ -143,7 +143,7 @@ fi
 # ---- build -------------------------------------------------------------------
 BUILD_DIR=$(mktemp -d)
 info "building quarantined from $REPO_DIR"
-( cd "$REPO_DIR" && go build -trimpath -o "$BUILD_DIR/quarantined" ./cmd/quarantined )
+( cd "$REPO_DIR" && go build -buildvcs=false -trimpath -o "$BUILD_DIR/quarantined" ./cmd/quarantined )
 
 # ---- install binary ----------------------------------------------------------
 info "installing binary to $BIN_PATH"
