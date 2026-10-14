@@ -13,6 +13,7 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 | QUA-01 | `internal/quarantine/vault.go:124-500` | Spaghetti & Architecture | High | 628 LOC file + 101 LOC `QuarantineFile`, 117 LOC `Restore`, 56 LOC `Sweep` | Resolved |
 | TUI-01 | `internal/tui/model.go:390-666` | Spaghetti & Architecture | High | 842 LOC file + 115 LOC `update`, 97 LOC `handleKey` | Resolved |
 | TUI-02 | `internal/tui/view.go:207-670` | Spaghetti & Architecture | High | 729 LOC file + 67 LOC `renderWatchPane` | Resolved |
+| PKG-02 | `internal/triage/pkgbuild/rules.go:96-594` | Spaghetti & Architecture | High | 594 LOC file + 70 LOC `checkCallExpr`, 55 LOC `checkTamperingCommand`, 51 LOC `cmdSubstOutputExecuted` | Resolved |
 
 ---
 
@@ -170,3 +171,28 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
   - `renderWatchPane` eliminated as >50 LOC violation.
   - `internal/tui/view.go` line count dropped from 729 LOC to 293 LOC (<= 300 LOC limit).
   - Net metric reduction of 2 violations (17 -> 15).
+
+---
+
+### [PKG-02] Oversized AST Rule Engine, Path Tampering & Network Execution Handlers
+
+- **File & Location:** `internal/triage/pkgbuild/rules.go:96-594`
+- **Issue Category:** Spaghetti & Architecture
+- **Severity:** High
+- **Current State:**
+  `internal/triage/pkgbuild/rules.go` was 594 LOC combining core AST traversal with:
+  1. `checkCallExpr` (70 LOC): handling `eval`, `base64` decode, `/dev/tcp` sockets, reverse shells, and path tampering in a single routine.
+  2. `checkTamperingCommand` (55 LOC): checking file copy/move (`cp`, `mv`, `install`, `rm`, `tee`), sed in-place modifications, and symlink creation without staging guards.
+  3. Path target evaluation (`checkPathTarget`, `matchSystemPath`, `splitTargetDirectory`).
+  4. Network execution checks (`checkBinaryCmd`, `collectPipelineStages`, `hasNetworkTool`, `checkCmdSubst`, `checkProcSubst`, `procSubstOutputExecuted`, and 51 LOC `cmdSubstOutputExecuted`).
+- **Refactored Code:**
+  - Extracted path tampering analysis into `internal/triage/pkgbuild/tampering.go` (180 LOC): modularized `checkTamperingCommand` into `checkCopyMoveTampering`, `checkSedTampering`, and `checkSymlinkTampering` (all <= 22 LOC).
+  - Extracted network pipelines and command/process substitutions into `internal/triage/pkgbuild/net_exec.go` (235 LOC): decomposed `cmdSubstOutputExecuted` into `findAncestorsContext`, `isPipedToLaterShell`, and `cmdSubstOutputExecuted` (all <= 19 LOC).
+  - Decomposed `checkCallExpr` in `rules.go` into `checkCallEval`, `checkCallBase64`, and `checkCallDevSocket` (all <= 26 LOC).
+  - Reduced `internal/triage/pkgbuild/rules.go` from 594 LOC to 217 LOC (<= 300 LOC limit).
+- **Expected Impact:**
+  - `checkCallExpr` eliminated as >50 LOC violation.
+  - `checkTamperingCommand` eliminated as >50 LOC violation.
+  - `cmdSubstOutputExecuted` eliminated as >50 LOC violation.
+  - `internal/triage/pkgbuild/rules.go` line count dropped from 594 LOC to 217 LOC (<= 300 LOC limit).
+  - Net metric reduction of 4 violations (15 -> 11).
