@@ -8,6 +8,7 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 |---|---|---|---|---|---|
 | IPC-01 | `internal/ipc/server.go:311-435` | Spaghetti & Architecture | High | Monolithic 124 LOC `dispatch` routing + error mapping | Resolved |
 | PKG-01 | `internal/triage/pkgbuild/rules.go:47-166` | Spaghetti & Architecture | High | Oversized 120 LOC `CheckUntrustedSources` mixing URL/host parsing & trigger synthesis | Resolved |
+| BIN-01 | `internal/triage/binary/scorer.go:300-412` | Spaghetti & Architecture | High | Monolithic 113 LOC `TriageBinary` + 68 LOC `calculateCappedScore` | Resolved |
 
 ---
 
@@ -55,3 +56,22 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
   - `CheckUntrustedSources` reduced from 120 LOC to 39 LOC (<50 LOC limit).
   - `internal/triage/pkgbuild/rules.go` reduced from 767 LOC to 597 LOC.
   - Eliminated network/URL dependencies from `rules.go`.
+
+---
+
+### [BIN-01] Monolithic `TriageBinary` & `calculateCappedScore` in Binary Scorer
+
+- **File & Location:** `internal/triage/binary/scorer.go:300-412`
+- **Issue Category:** Spaghetti & Architecture
+- **Severity:** High
+- **Current State:**
+  `TriageBinary` spanned 113 LOC, interleaving format dispatch with raw payload entropy calculation, UPX string matching, capability checks, IOC matching, and Go/Rust runtime marker inspection. Additionally, `calculateCappedScore` spanned 68 LOC mixing category summing, cap enforcement, dampener adjustment, and verdict determination.
+- **Refactored Code:**
+  - Extracted `TriageBinary`, `triageRawPayload`, `detectRawTriggers`, and `detectRuntimeMarkers` into `internal/triage/binary/triage.go` (<50 LOC per function).
+  - Decomposed `calculateCappedScore` into `sumCategoryScores` (26 LOC) and `calculateCappedScore` (35 LOC).
+  - Modernized `strings.HasPrefix` + `strings.TrimPrefix` to `strings.CutPrefix`.
+- **Expected Impact:**
+  - `TriageBinary` eliminated as >50 LOC violation.
+  - `calculateCappedScore` eliminated as >50 LOC violation.
+  - `internal/triage/binary/scorer.go` reduced from 412 LOC to 296 LOC (<=300 LOC limit).
+  - Total violations reduced by 3.

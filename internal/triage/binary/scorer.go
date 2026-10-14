@@ -1,9 +1,7 @@
 package binary
 
 import (
-	"bytes"
 	"sort"
-	"strings"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
 )
@@ -53,13 +51,12 @@ type TriageResult struct {
 	IsRustBinary     bool            `json:"is_rust_binary"`
 }
 
-func calculateCappedScore(triggers []ThreatTrigger, isGo, isRust bool, quarantineThreshold int) (int, Verdict, []string) {
+func sumCategoryScores(triggers []ThreatTrigger) (int, map[string]struct{}) {
 	var (
-		scoreStructure    = 0
-		scoreEntropy      = 0
-		scoreCapabilities = 0
-		scoreIOC          = 0
-		dampeners         []string
+		scoreStructure    int
+		scoreEntropy      int
+		scoreCapabilities int
+		scoreIOC          int
 		categoryMap       = make(map[string]struct{})
 	)
 
@@ -77,7 +74,6 @@ func calculateCappedScore(triggers []ThreatTrigger, isGo, isRust bool, quarantin
 		}
 	}
 
-	// Cap entropy, capabilities, and IOC contributions; structure remains uncapped.
 	if scoreEntropy > 40 {
 		scoreEntropy = 40
 	}
@@ -88,7 +84,12 @@ func calculateCappedScore(triggers []ThreatTrigger, isGo, isRust bool, quarantin
 		scoreIOC = 50
 	}
 
-	total := scoreStructure + scoreEntropy + scoreCapabilities + scoreIOC
+	return scoreStructure + scoreEntropy + scoreCapabilities + scoreIOC, categoryMap
+}
+
+func calculateCappedScore(triggers []ThreatTrigger, isGo, isRust bool, quarantineThreshold int) (int, Verdict, []string) {
+	total, categoryMap := sumCategoryScores(triggers)
+	var dampeners []string
 
 	if isGo {
 		total -= 25
@@ -101,8 +102,7 @@ func calculateCappedScore(triggers []ThreatTrigger, isGo, isRust bool, quarantin
 
 	if total < 0 {
 		total = 0
-	}
-	if total > 100 {
+	} else if total > 100 {
 		total = 100
 	}
 
@@ -293,120 +293,4 @@ func ScoreMachO(analysis *MachOAnalysis, cfg *config.Config, path string) *Triag
 		"injection_api_", "High-risk process injection/memory execution API detected: ")
 
 	return finalizeResult(res, false, false, qThresh)
-}
-
-// TriageBinary analyzes a byte slice of binary or script data, detects format,
-// evaluates security rules, and returns a TriageResult.
-func TriageBinary(data []byte, path string, cfg *config.Config) (*TriageResult, error) {
-	if cfg == nil {
-		cfg = config.DefaultConfig()
-	}
-
-	format := DetectFormat(data)
-
-	switch format {
-	case FormatELF:
-		analysis, err := AnalyzeELF(data)
-		if err != nil {
-			return nil, err
-		}
-		res := ScoreELF(analysis, cfg, path)
-		res.Format = FormatELF
-		return res, nil
-
-	case FormatPE:
-		analysis, err := AnalyzePE(data)
-		if err != nil {
-			return nil, err
-		}
-		res := ScorePE(analysis, cfg, path)
-		res.Format = FormatPE
-		return res, nil
-
-	case FormatMachO:
-		analysis, err := AnalyzeMachO(data)
-		if err != nil {
-			return nil, err
-		}
-		res := ScoreMachO(analysis, cfg, path)
-		res.Format = FormatMachO
-		return res, nil
-	}
-
-	// For scripts or unknown formats: calculate entropy and inspect for UPX/IOCs/capabilities
-	ent := CalculateEntropy(data)
-	entropyThreshold := cfg.Binary.EntropyThreshold
-	if entropyThreshold <= 0 {
-		entropyThreshold = 7.3
-	}
-
-	quarantineThreshold := cfg.Quarantine.ThresholdScore
-	if quarantineThreshold <= 0 {
-		quarantineThreshold = 85
-	}
-
-	res := &TriageResult{
-		Path:    path,
-		Format:  format,
-		Entropy: ent,
-	}
-
-	if bytes.Contains(data, []byte("UPX!")) {
-		res.Triggers = append(res.Triggers, ThreatTrigger{
-			Category:    CategoryEntropy,
-			Name:        "upx_packed",
-			Description: "Binary packed with UPX packer",
-			ScoreWeight: 30,
-		})
-	}
-
-	if ent > entropyThreshold && len(data) > 512 {
-		res.Triggers = append(res.Triggers, ThreatTrigger{
-			Category:    CategoryEntropy,
-			Name:        "high_entropy",
-			Description: "Payload entropy exceeds threshold",
-			ScoreWeight: 25,
-		})
-	}
-
-	for i, c := range capBytes {
-		if bytes.Contains(data, c) {
-			capName := capStrings[i]
-			res.Triggers = append(res.Triggers, ThreatTrigger{
-				Category:    CategoryCapabilities,
-				Name:        "injection_api_" + capName,
-				Description: "High-risk process injection API detected: " + capName,
-				ScoreWeight: 20,
-			})
-		}
-	}
-
-	for _, ioc := range scanRawIOCs(data) {
-		description := "Suspicious payload or network pattern detected: " + ioc
-		if strings.HasPrefix(ioc, "public-c2-ip:") {
-			description = "Public C2 IP detected: " + strings.TrimPrefix(ioc, "public-c2-ip:")
-		}
-		res.Triggers = append(res.Triggers, ThreatTrigger{
-			Category:    CategoryIOC,
-			Name:        "ioc_payload",
-			Description: description,
-			ScoreWeight: 35,
-		})
-	}
-
-	if bytes.Contains(data, []byte("runtime.main")) || bytes.Contains(data, []byte("Go build ID:")) {
-		res.IsGoBinary = true
-	}
-	if bytes.Contains(data, []byte("rust_panic")) || bytes.Contains(data, []byte("__rust_alloc")) {
-		res.IsRustBinary = true
-	}
-
-	score, verdict, dampeners := calculateCappedScore(res.Triggers, res.IsGoBinary, res.IsRustBinary, quarantineThreshold)
-	res.Score = score
-	res.Verdict = verdict
-	res.DampenersApplied = dampeners
-
-	res.CategoriesHit = categoriesHit(res.Triggers)
-
-	return res, nil
 }
