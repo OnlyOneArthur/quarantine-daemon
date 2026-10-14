@@ -17,6 +17,7 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 | WAT-01 | `internal/watcher/watcher.go:1-565` | Spaghetti & Architecture | High | 565 LOC file mixing monitoring, debouncing, file readiness polling, and reconcile walks | Resolved |
 | PKG-03 | `internal/triage/pkgbuild/scorer.go:13-95` | Spaghetti & Architecture | Medium | 82 LOC `ScorePKGBUILD` mixing trigger collection, score/verdict calculation & dampener deduplication | Resolved |
 | PKG-04 | `internal/triage/pkgbuild/dampeners.go:35-107` | Spaghetti & Architecture | Medium | 71 LOC `EvaluateIntegrity` intermixing VCS exemptions, missing checksum checks & inline SKIP closures | Resolved |
+| BIN-03 | `internal/triage/binary/detector.go:22-87` | Spaghetti & Architecture | Medium | 65 LOC `DetectFormat` intermixing script shebang, ELF, Mach-O universal, and PE header parsing | Resolved |
 
 ---
 
@@ -256,3 +257,19 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 - **Expected Impact:**
   - `EvaluateIntegrity` eliminated as >50 LOC violation (reduced from 71 LOC to 16 LOC).
   - Net metric reduction of 1 violation (9 -> 8).
+
+---
+
+### [BIN-03] Oversized `DetectFormat` in Binary Format Detector
+
+- **File & Location:** `internal/triage/binary/detector.go:22-87`
+- **Issue Category:** Spaghetti & Architecture
+- **Severity:** Medium
+- **Current State:**
+  `DetectFormat` spanned 65 LOC, combining shebang evaluation, ELF magic prefix checking, Mach-O endianness switching, FAT arch table boundary calculations, and PE MZ/PE signature offset extraction directly inside a single function body.
+- **Refactored Code:**
+  - Decomposed format probes into discrete predicates: `isScript` (3 LOC), `isELF` (3 LOC), `isMachO` (27 LOC), and `isPE` (21 LOC).
+  - Streamlined `DetectFormat` into a concise 13-line declarative type switch.
+- **Expected Impact:**
+  - `DetectFormat` eliminated as >50 LOC violation.
+  - Net metric reduction of 1 violation (8 -> 7).
