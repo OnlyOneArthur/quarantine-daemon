@@ -12,6 +12,7 @@ import (
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/quarantine"
+	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/binary"
 )
 
 // Palette. Every color is adaptive so the TUI reads correctly on light and dark
@@ -217,7 +218,7 @@ func newSpinner() spinner.Model {
 // Every line is clamped to the terminal width when the width is known.
 func (m *Model) View() string {
 	footer := m.renderFooter()
-	bodyH := m.bodyHeight()
+	bodyH := m.bodyHeight(lipgloss.Height(footer))
 
 	body := m.renderPane()
 	if m.pending != confirmNone {
@@ -241,8 +242,8 @@ func (m *Model) View() string {
 }
 
 // bodyHeight is the number of terminal rows left for the active pane.
-func (m *Model) bodyHeight() int {
-	h := m.height - chromeTop - lipgloss.Height(m.renderFooter())
+func (m *Model) bodyHeight(footerHeight int) int {
+	h := m.height - chromeTop - footerHeight
 	if h < 0 {
 		return 0
 	}
@@ -257,14 +258,14 @@ func (m *Model) bodyWidth() int {
 	return defaultWidth
 }
 
-// boxWidth returns the width for a framed box, capped at max and the terminal.
-func (m *Model) boxWidth(max int) int {
+// boxWidth returns the width for a framed box, capped at limit and the terminal.
+func (m *Model) boxWidth(limit int) int {
 	if m.width <= 0 {
-		return max
+		return limit
 	}
 	w := m.width - 4
-	if w > max {
-		w = max
+	if w > limit {
+		w = limit
 	}
 	if w < 8 {
 		w = 8
@@ -549,7 +550,7 @@ func (m *Model) renderVaultRow(item *quarantine.ItemMetadata, fields []vaultFiel
 	}
 	cells := make([]string, 0, len(fields))
 	for _, f := range fields {
-		cells = append(cells, renderVaultCell(base, item, f, pathW))
+		cells = append(cells, m.renderVaultCell(base, item, f, pathW))
 	}
 	row := marker + strings.Join(cells, base.Render(" "))
 	if selected {
@@ -560,26 +561,20 @@ func (m *Model) renderVaultRow(item *quarantine.ItemMetadata, fields []vaultFiel
 	return row
 }
 
-const (
-	// quarantineScore and suspectScore are the verdict thresholds, mirroring
-	// the PKGBUILD scorer.
-	quarantineScore = 85
-	suspectScore    = 50
-)
-
-// severityColor colors a score by the same thresholds as verdictFor.
-func severityColor(score int) lipgloss.AdaptiveColor {
+// severityColor colors a score by the same thresholds as verdictFor: the
+// daemon's configured quarantine boundary and the shared ALERT boundary.
+func (m *Model) severityColor(score int) lipgloss.AdaptiveColor {
 	switch {
-	case score >= quarantineScore:
+	case score >= m.quarantineThreshold:
 		return colDanger
-	case score >= suspectScore:
+	case score >= binary.AlertScoreThreshold:
 		return colWarn
 	default:
 		return colMuted
 	}
 }
 
-func renderVaultCell(base lipgloss.Style, item *quarantine.ItemMetadata, f vaultField, pathW int) string {
+func (m *Model) renderVaultCell(base lipgloss.Style, item *quarantine.ItemMetadata, f vaultField, pathW int) string {
 	w := columnWidth(f, pathW)
 	style := base
 	var text string
@@ -587,14 +582,14 @@ func renderVaultCell(base lipgloss.Style, item *quarantine.ItemMetadata, f vault
 	case fieldID:
 		text = shortID(item.ID)
 	case fieldVerdict:
-		text = verdictFor(item.Score)
-		style = style.Foreground(severityColor(item.Score))
-		if item.Score >= suspectScore {
+		text = m.verdictFor(item.Score)
+		style = style.Foreground(m.severityColor(item.Score))
+		if item.Score >= binary.AlertScoreThreshold {
 			style = style.Bold(true)
 		}
 	case fieldScore:
 		text = fmt.Sprintf("%d", item.Score)
-		style = style.Foreground(severityColor(item.Score))
+		style = style.Foreground(m.severityColor(item.Score))
 	case fieldPath:
 		text = shortPath(item.OriginalPath, w)
 	case fieldQuarantined:
@@ -677,7 +672,7 @@ func (m *Model) renderInspector() string {
 	))
 	b.WriteString(m.renderSection("Assessment",
 		fieldRow("score", fmt.Sprintf("%d", it.Score), valueW),
-		fieldRow("verdict", verdictFor(it.Score), valueW),
+		fieldRow("verdict", m.verdictFor(it.Score), valueW),
 		listRows("triggers", it.Triggers, valueW, errStyle),
 		listRows("categories", it.CategoriesHit, valueW, dimStyle),
 		listRows("dampeners", it.DampenersApplied, valueW, dimStyle),

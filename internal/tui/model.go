@@ -14,8 +14,10 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/ipc"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/quarantine"
+	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/binary"
 )
 
 const (
@@ -130,6 +132,11 @@ type Model struct {
 
 	status *ipc.StatusResponse
 
+	// quarantineThreshold is the daemon's configured quarantine score boundary,
+	// learned from the status reply so the TUI labels scores the same way the
+	// daemon does. It defaults to the built-in default until a reply arrives.
+	quarantineThreshold int
+
 	pending   confirmKind
 	notice    string
 	noticeErr bool
@@ -157,10 +164,11 @@ type Model struct {
 // reply arrives.
 func NewModel(dial Dialer, version string) *Model {
 	return &Model{
-		dial:    dial,
-		version: version,
-		spin:    newSpinner(),
-		help:    newHelp(),
+		dial:                dial,
+		version:             version,
+		quarantineThreshold: config.DefaultConfig().Quarantine.ThresholdScore,
+		spin:                newSpinner(),
+		help:                newHelp(),
 	}
 }
 
@@ -192,14 +200,16 @@ type inspectMsg struct {
 }
 
 type actionMsg struct {
-	kind confirmKind
-	id   string
-	err  error
+	client Client
+	kind   confirmKind
+	id     string
+	err    error
 }
 
 type addWatchMsg struct {
-	path string
-	err  error
+	client Client
+	path   string
+	err    error
 }
 
 // blinkMsg advances the eye blink animation.
@@ -369,19 +379,19 @@ func actionCmd(c Client, kind confirmKind, id string) tea.Cmd {
 		case confirmPurge:
 			err = c.PurgeItem(ctx, id)
 		}
-		return actionMsg{kind: kind, id: id, err: err}
+		return actionMsg{client: c, kind: kind, id: id, err: err}
 	}
 }
 
 func addWatchCmd(c Client, path string) tea.Cmd {
 	return func() tea.Msg {
 		if c == nil {
-			return addWatchMsg{path: path, err: errors.New("not connected")}
+			return addWatchMsg{client: c, path: path, err: errors.New("not connected")}
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		err := c.AddWatchPath(ctx, path)
-		return addWatchMsg{path: path, err: err}
+		return addWatchMsg{client: c, path: path, err: err}
 	}
 }
 
@@ -408,9 +418,14 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleKey(msg)
 
 	case tickMsg:
-		if m.client == nil && m.reconnectWait > 0 {
+		if m.client == nil && m.reconnectWait > RefreshInterval {
 			m.reconnectWait -= RefreshInterval
 			return m, tickCmd()
+		}
+		if m.client == nil {
+			// The backoff countdown has expired: reconnect on this tick instead
+			// of burning another full RefreshInterval before trying.
+			m.reconnectWait = 0
 		}
 		return m, tea.Batch(m.refreshCmd(), tickCmd())
 
@@ -456,6 +471,9 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.status = msg.status
+		if msg.status != nil && msg.status.ThresholdScore > 0 {
+			m.quarantineThreshold = msg.status.ThresholdScore
+		}
 		return m, nil
 
 	case vaultMsg:
@@ -485,7 +503,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case actionMsg:
 		if msg.err != nil {
-			if m.handleConnErr(m.client, msg.err) {
+			if m.handleConnErr(msg.client, msg.err) {
 				return m, nil
 			}
 			m.setNotice(fmt.Sprintf("%s failed: %v", actionLabel(msg.kind), msg.err), true)
@@ -499,7 +517,7 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case addWatchMsg:
 		if msg.err != nil {
-			if m.handleConnErr(m.client, msg.err) {
+			if m.handleConnErr(msg.client, msg.err) {
 				return m, nil
 			}
 			m.setNotice(fmt.Sprintf("add watch failed: %v", msg.err), true)
@@ -526,13 +544,15 @@ func actionLabel(k confirmKind) string {
 }
 
 // handleConnErr reports whether err is a transport failure; if so it drops the
-// client so the tick loop reconnects with backoff.
+// client so the tick loop reconnects with backoff. It also rejects replies from
+// a connection that is no longer the active client: a slow RPC that completes
+// successfully after a reconnect must not mutate current model state.
 func (m *Model) handleConnErr(c Client, err error) bool {
-	if err == nil {
-		return false
-	}
 	if m.client == nil || c != m.client {
 		return true // stale reply from a dropped connection
+	}
+	if err == nil {
+		return false
 	}
 	m.lastErr = err
 	if isTransportErr(err) {
@@ -832,14 +852,14 @@ func humanBytes(n int64) string {
 }
 
 // verdictFor derives a coarse verdict label from a quarantine score, using the
-// same thresholds the vault table renders with.
-func verdictFor(score int) string {
+// daemon's configured quarantine threshold and the shared ALERT boundary.
+func (m *Model) verdictFor(score int) string {
 	switch {
-	case score >= quarantineScore:
-		return "QUARANTINE"
-	case score >= suspectScore:
-		return "SUSPECT"
+	case score >= m.quarantineThreshold:
+		return string(binary.VerdictQuarantine)
+	case score >= binary.AlertScoreThreshold:
+		return string(binary.VerdictAlert)
 	default:
-		return "LOW"
+		return string(binary.VerdictPass)
 	}
 }

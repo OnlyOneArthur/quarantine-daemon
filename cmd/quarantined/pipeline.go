@@ -169,12 +169,22 @@ func newDaemonController(p *pipeline, w *watcher.Watcher, cfg *config.Config, ve
 func (d *daemonController) Status() ipc.StatusResponse {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	// Report the live watch set, not the configured roots: AddWatchPath adds
+	// roots at runtime and the TUI should reflect them.
+	watchPaths := append([]string(nil), d.cfg.Paths.Watch...)
+	if d.watcher != nil {
+		if live := d.watcher.WatchedDirectories(); len(live) > 0 {
+			watchPaths = live
+		}
+	}
 	return ipc.StatusResponse{
 		Uptime:          time.Since(d.startedAt).Seconds(),
 		Version:         d.version,
 		ScannedCount:    d.pipeline.scanned.Load(),
 		QuarantineCount: d.pipeline.quarantined.Load(),
-		WatchPaths:      append([]string(nil), d.cfg.Paths.Watch...),
+		WatchPaths:      watchPaths,
+		ThresholdScore:  d.cfg.Quarantine.ThresholdScore,
+		AlertScore:      binary.AlertScoreThreshold,
 	}
 }
 

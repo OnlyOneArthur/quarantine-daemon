@@ -62,4 +62,9 @@ type StatusResponse struct {
 	ScannedCount    int64    `json:"scanned_count"`
 	QuarantineCount int64    `json:"quarantine_count"`
 	WatchPaths      []string `json:"watch_paths"`
+
+	// ThresholdScore and AlertScore let the TUI label scores with the same
+	// verdict boundaries the daemon actually applies, instead of guessing.
+	ThresholdScore int `json:"threshold_score"`
+	AlertScore     int `json:"alert_score"`
 }

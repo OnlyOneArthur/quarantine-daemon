@@ -114,20 +114,22 @@ func drain(t *testing.T, cmd tea.Cmd) []tea.Msg {
 
 // feed applies cmd and then every command it produces, breadth-first, until
 // the tree settles. This mirrors tea.Program's event loop without starting one.
-func feed(t *testing.T, m *Model, cmd tea.Cmd) (tea.Model, tea.Cmd) {
+// It returns the settled model; the final command is intentionally discarded
+// because the queue is drained before returning.
+func feed(t *testing.T, m *Model, cmd tea.Cmd) tea.Model {
 	t.Helper()
 	cur := tea.Model(m)
-	var last tea.Cmd
 	queue := drain(t, cmd)
 	for len(queue) > 0 {
 		msg := queue[0]
 		queue = queue[1:]
+		var last tea.Cmd
 		cur, last = cur.Update(msg)
 		if last != nil {
 			queue = append(queue, drain(t, last)...)
 		}
 	}
-	return cur, last
+	return cur
 }
 
 func sampleItem(id string) *quarantine.ItemMetadata {
@@ -162,7 +164,7 @@ func startModel(t *testing.T, f *fakeClient) *Model {
 	t.Cleanup(func() { blinkTickCmd = origBlink })
 
 	m := NewModel(func() (Client, error) { return f, nil }, "test")
-	cur, _ := feed(t, m, m.Init())
+	cur := feed(t, m, m.Init())
 	got, ok := cur.(*Model)
 	if !ok {
 		t.Fatalf("Update returned %T, want *Model", cur)
@@ -310,7 +312,7 @@ func TestInspectorOpensSelectedItem(t *testing.T) {
 
 	cur, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = cur.(*Model)
-	cur, _ = feed(t, m, cmd)
+	cur = feed(t, m, cmd)
 	m = cur.(*Model)
 
 	if m.pane != paneInspector {
@@ -371,8 +373,7 @@ func TestActionsFollowActivePane(t *testing.T) {
 	}
 	cur, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	m = cur.(*Model)
-	cur, _ = feed(t, m, cmd)
-	m = cur.(*Model)
+	_ = feed(t, m, cmd)
 	if len(f.restored) != 1 || f.restored[0] != first.ID {
 		t.Fatalf("restored %v, want the inspected item %s", f.restored, first.ID)
 	}
@@ -410,7 +411,7 @@ func TestRestoreRequiresConfirmation(t *testing.T) {
 	m = cur.(*Model)
 	cur, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	m = cur.(*Model)
-	cur, _ = feed(t, m, cmd)
+	cur = feed(t, m, cmd)
 	m = cur.(*Model)
 	if len(f.restored) != 1 || f.restored[0] != item.ID {
 		t.Fatalf("restore not executed: %v", f.restored)
@@ -434,8 +435,7 @@ func TestPurgeRequiresConfirmation(t *testing.T) {
 	}
 	cur, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	m = cur.(*Model)
-	cur, _ = feed(t, m, cmd)
-	m = cur.(*Model)
+	_ = feed(t, m, cmd)
 	if len(f.purged) != 1 || f.purged[0] != item.ID {
 		t.Fatalf("purge not executed: %v", f.purged)
 	}
@@ -453,7 +453,7 @@ func TestRestoreErrorSurfacesNotice(t *testing.T) {
 	m = cur.(*Model)
 	cur, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
 	m = cur.(*Model)
-	cur, _ = feed(t, m, cmd)
+	cur = feed(t, m, cmd)
 	m = cur.(*Model)
 	if !m.noticeErr || !strings.Contains(m.notice, "destination busy") {
 		t.Fatalf("error notice missing: err=%v notice=%q", m.noticeErr, m.notice)
@@ -556,9 +556,10 @@ func TestEmptyVaultViews(t *testing.T) {
 }
 
 func TestVerdictFor(t *testing.T) {
-	cases := map[int]string{10: "LOW", 60: "SUSPECT", 90: "QUARANTINE"}
+	m := &Model{quarantineThreshold: 85}
+	cases := map[int]string{10: "PASS", 60: "ALERT", 90: "QUARANTINE"}
 	for score, want := range cases {
-		if got := verdictFor(score); got != want {
+		if got := m.verdictFor(score); got != want {
 			t.Errorf("verdictFor(%d)=%q want %q", score, got, want)
 		}
 	}
@@ -603,7 +604,7 @@ func TestWatchPaneSelectPreset(t *testing.T) {
 	// Select preset 0 (~/Downloads) with enter
 	cur, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = cur.(*Model)
-	cur, _ = feed(t, m, cmd)
+	cur = feed(t, m, cmd)
 	m = cur.(*Model)
 
 	if len(f.added) != 1 || f.added[0] != "~/Downloads" {
@@ -646,7 +647,7 @@ func TestWatchPaneAddCustomPath(t *testing.T) {
 	// Submit with enter
 	cur, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = cur.(*Model)
-	cur, _ = feed(t, m, cmd)
+	cur = feed(t, m, cmd)
 	m = cur.(*Model)
 
 	if m.enteringPath {
@@ -735,7 +736,7 @@ func TestIsWatched(t *testing.T) {
 func newBlinkModel(t *testing.T, width, height int) *Model {
 	t.Helper()
 	orig := blinkTickCmd
-	blinkTickCmd = func(d time.Duration) tea.Cmd { return func() tea.Msg { return nil } }
+	blinkTickCmd = func(_ time.Duration) tea.Cmd { return func() tea.Msg { return nil } }
 	t.Cleanup(func() { blinkTickCmd = orig })
 
 	m := NewModel(func() (Client, error) { return newFakeClient(), nil }, "test")
@@ -775,7 +776,7 @@ func TestBlinkSequenceAdvances(t *testing.T) {
 		t.Fatalf("first blink delay = %v, want [%v]", delays, blinkDelays[0])
 	}
 
-	var frames []int
+	frames := make([]int, 0, len(blinkSequence))
 	for range blinkSequence {
 		frames = append(frames, blinkSequence[m.blinkStep])
 		cur, cmd := m.Update(blinkMsg(time.Now()))
@@ -853,5 +854,42 @@ func TestBlinkResumesAfterLeavingAndReturning(t *testing.T) {
 	narrow := newBlinkModel(t, 40, 18)
 	if narrow.blinkActive {
 		t.Error("blink loop started on a terminal too narrow for the emblem")
+	}
+}
+
+func TestStaleSuccessfulReplyFromDroppedClientIsIgnored(t *testing.T) {
+	f := newFakeClient()
+	f.status = &ipc.StatusResponse{Version: "old"}
+	m := connectedModel(t, f)
+	m.status = &ipc.StatusResponse{Version: "current"}
+
+	// Simulate the connection being replaced while a slow RPC was in flight.
+	old := m.client
+	replacement := newFakeClient()
+	m.client = replacement
+
+	m.Update(statusMsg{client: old, status: &ipc.StatusResponse{Version: "stale"}})
+	if m.status == nil || m.status.Version != "current" {
+		t.Fatalf("stale reply overwrote state: %+v", m.status)
+	}
+	if m.client != replacement {
+		t.Fatal("stale reply dropped the current client")
+	}
+}
+
+func TestInFlightActionErrorFromDroppedClientDoesNotDropNewClient(t *testing.T) {
+	f := newFakeClient()
+	m := connectedModel(t, f)
+
+	old := m.client
+	replacement := newFakeClient()
+	m.client = replacement
+	m.connected = true
+	m.backoff = 0
+
+	// A dial failure on the old connection must not tear down the new one.
+	m.Update(actionMsg{client: old, kind: confirmPurge, id: "abc", err: errors.New("dial: broken pipe")})
+	if m.client != replacement || !m.connected {
+		t.Fatal("in-flight error from dropped client disconnected the healthy replacement")
 	}
 }

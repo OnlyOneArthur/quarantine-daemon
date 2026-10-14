@@ -12,11 +12,17 @@ import (
 // Verdict defines the triage action verdict.
 type Verdict string
 
+// Verdict values ordered from least to most severe.
 const (
 	VerdictPass       Verdict = "PASS"
 	VerdictAlert      Verdict = "ALERT"
 	VerdictQuarantine Verdict = "QUARANTINE"
 )
+
+// AlertScoreThreshold is the score at or above which a result is reported as an
+// ALERT even when the quarantine threshold is not reached. It is exported so
+// clients (e.g. the TUI) can label scores with the daemon's real boundaries.
+const AlertScoreThreshold = 50
 
 // Risk category identifiers.
 const (
@@ -110,7 +116,7 @@ func calculateCappedScore(triggers []ThreatTrigger, isGo, isRust bool, quarantin
 			verdict = VerdictAlert
 			total = quarantineThreshold - 1
 		}
-	} else if total >= 50 {
+	} else if total >= AlertScoreThreshold {
 		verdict = VerdictAlert
 	}
 
