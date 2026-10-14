@@ -10,6 +10,7 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 | PKG-01 | `internal/triage/pkgbuild/rules.go:47-166` | Spaghetti & Architecture | High | Oversized 120 LOC `CheckUntrustedSources` mixing URL/host parsing & trigger synthesis | Resolved |
 | BIN-01 | `internal/triage/binary/scorer.go:300-412` | Spaghetti & Architecture | High | Monolithic 113 LOC `TriageBinary` + 68 LOC `calculateCappedScore` | Resolved |
 | BIN-02 | `internal/triage/binary/elf.go:84-308` | Spaghetti & Architecture | High | Oversized 109 LOC `parseRawELFHeaders` & 77 LOC `analyzeWithDebugELF` + 439 LOC file | Resolved |
+| QUA-01 | `internal/quarantine/vault.go:124-500` | Spaghetti & Architecture | High | 628 LOC file + 101 LOC `QuarantineFile`, 117 LOC `Restore`, 56 LOC `Sweep` | Resolved |
 
 ---
 
@@ -100,3 +101,28 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
   - `analyzeWithDebugELF` eliminated as >50 LOC violation.
   - `internal/triage/binary/elf.go` line count dropped from 439 LOC to 210 LOC (<=300 LOC limit).
   - Net metric reduction of 3 violations (27 -> 24).
+
+---
+
+### [QUA-01] Monolithic Quarantine Vault Operations & Lifecycle Routines
+
+- **File & Location:** `internal/quarantine/vault.go:124-500`
+- **Issue Category:** Spaghetti & Architecture
+- **Severity:** High
+- **Current State:**
+  `internal/quarantine/vault.go` was 628 LOC, combining vault coordination with:
+  1. `QuarantineFile` (101 LOC): source hashing, inode resolution, move coordination, permission neutralization, PKGBUILD decoy stub generation, and metadata sidecar writing.
+  2. `Restore` (117 LOC): destination validation, PKGBUILD decoy stub verification, temporary file staging, permission elevation/neutralization, hard link/rename publishing, and artifact cleanup.
+  3. `Sweep` (56 LOC): dual-pass directory traversal across active sidecars and orphaned raw payload files.
+  4. Item metadata JSON serialization, atomic file writing, and PKGBUILD stub constants.
+- **Refactored Code:**
+  - Extracted metadata structures and sidecar lifecycle into `internal/quarantine/meta.go` (128 LOC).
+  - Extracted `QuarantineFile` into `internal/quarantine/quarantine.go` (137 LOC), decomposing into `readSourceInfo`, `commitQuarantine`, and `finalizeQuarantine` (all <= 32 LOC).
+  - Extracted `Restore` into `internal/quarantine/restore.go` (164 LOC), decomposing into `checkRestoreDestination`, `stageRestoreArtifact`, `copyArtifactContent`, `publishRestoredFile`, and `cleanupRestoredVaultItem` (all <= 38 LOC).
+  - Decomposed `Sweep` in `vault.go` into `sweepManaged` and `sweepOrphans` (all <= 21 LOC).
+- **Expected Impact:**
+  - `QuarantineFile` eliminated as >50 LOC violation.
+  - `Restore` eliminated as >50 LOC violation.
+  - `Sweep` eliminated as >50 LOC violation.
+  - `internal/quarantine/vault.go` line count dropped from 628 LOC to 296 LOC (<=300 LOC limit).
+  - Net metric reduction of 4 violations (24 -> 20).
