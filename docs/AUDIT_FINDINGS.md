@@ -11,6 +11,7 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 | BIN-01 | `internal/triage/binary/scorer.go:300-412` | Spaghetti & Architecture | High | Monolithic 113 LOC `TriageBinary` + 68 LOC `calculateCappedScore` | Resolved |
 | BIN-02 | `internal/triage/binary/elf.go:84-308` | Spaghetti & Architecture | High | Oversized 109 LOC `parseRawELFHeaders` & 77 LOC `analyzeWithDebugELF` + 439 LOC file | Resolved |
 | QUA-01 | `internal/quarantine/vault.go:124-500` | Spaghetti & Architecture | High | 628 LOC file + 101 LOC `QuarantineFile`, 117 LOC `Restore`, 56 LOC `Sweep` | Resolved |
+| TUI-01 | `internal/tui/model.go:390-666` | Spaghetti & Architecture | High | 842 LOC file + 115 LOC `update`, 97 LOC `handleKey` | Resolved |
 
 ---
 
@@ -126,3 +127,26 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
   - `Sweep` eliminated as >50 LOC violation.
   - `internal/quarantine/vault.go` line count dropped from 628 LOC to 296 LOC (<=300 LOC limit).
   - Net metric reduction of 4 violations (24 -> 20).
+
+---
+
+### [TUI-01] Oversized Model Lifecycle, Event Dispatch & Key Handling in TUI
+
+- **File & Location:** `internal/tui/model.go:390-666`
+- **Issue Category:** Spaghetti & Architecture
+- **Severity:** High
+- **Current State:**
+  `internal/tui/model.go` was 842 LOC, combining Bubble Tea model state with:
+  1. `update` (115 LOC): massive type switch handling all Bubble Tea messages (`tickMsg`, `connectMsg`, `statusMsg`, `vaultMsg`, `inspectMsg`, `actionMsg`, `addWatchMsg`, `spinner.TickMsg`) directly inside the central update loop.
+  2. `handleKey` (97 LOC): monolithic keyboard input handling coordinating input buffer typing, confirmation dialogs, global navigation shortcuts, watch preset navigation, vault scrolling, and item actions in a single cascading condition block.
+  3. IPC Client commands and Dialers (`refreshCmd`, `connectCmd`, `statusOnlyCmd`, `vaultOnlyCmd`, `fetchCmd`, `inspectCmd`, `actionCmd`, `addWatchCmd`) intermixed with UI model logic.
+- **Refactored Code:**
+  - Extracted IPC Client interface, dialers, IPC commands, and connection error handling into `internal/tui/commands.go` (224 LOC).
+  - Extracted key handling, cursor navigation, and window clamping into `internal/tui/handlers.go` (258 LOC), decomposing `handleKey` into modular handlers (`handleGlobalKey`, `handleWatchKey`, `handleVaultKey`, `handleActionKey`, `handleConfirmKey`, `handleInputKey`), all <= 28 LOC. Modernized bounds clamping with Go `max()`.
+  - Extracted asynchronous message reaction routines into `internal/tui/messages.go` (166 LOC), reducing `update` in `model.go` to a concise 26 LOC dispatcher.
+  - Reduced `internal/tui/model.go` from 842 LOC to 227 LOC (<=300 LOC limit).
+- **Expected Impact:**
+  - `update` eliminated as >50 LOC violation.
+  - `handleKey` eliminated as >50 LOC violation.
+  - `internal/tui/model.go` line count dropped from 842 LOC to 227 LOC (<=300 LOC limit).
+  - Net metric reduction of 3 violations (20 -> 17).

@@ -1,23 +1,15 @@
-// Package tui implements the Bubble Tea terminal client for the quarantined
-// daemon. It is a pure IPC client: it never opens the vault directly and talks
-// to the daemon exclusively through the Client interface.
 package tui
 
 import (
-	"context"
-	"errors"
-	"fmt"
 	"time"
 
 	"github.com/charmbracelet/bubbles/help"
-	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/ipc"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/quarantine"
-	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/binary"
 )
 
 const (
@@ -29,33 +21,6 @@ const (
 	maxBackoff      = 30 * time.Second
 	customWatchPath = "~/Downloads/PKGBUILD"
 )
-
-// Client is the daemon IPC surface the TUI uses. The TUI never touches the vault directly.
-type Client interface {
-	GetStatus(ctx context.Context) (*ipc.StatusResponse, error)
-	ListVault(ctx context.Context) ([]*quarantine.ItemMetadata, error)
-	InspectItem(ctx context.Context, id string) (*quarantine.ItemMetadata, error)
-	RestoreItem(ctx context.Context, id, destPath string) error
-	PurgeItem(ctx context.Context, id string) error
-	AddWatchPath(ctx context.Context, path string) error
-	Close() error
-}
-
-var _ Client = (*ipc.Client)(nil)
-
-// Dialer opens a new daemon connection. The Model calls it at startup and after disconnects.
-type Dialer func() (Client, error)
-
-// SocketDialer returns a Dialer connecting to the daemon control socket at socketPath.
-func SocketDialer(socketPath string) Dialer {
-	return func() (Client, error) {
-		c, err := ipc.NewClient(socketPath)
-		if err != nil {
-			return nil, err
-		}
-		return c, nil
-	}
-}
 
 type pane int
 
@@ -159,9 +124,6 @@ type Model struct {
 
 	status *ipc.StatusResponse
 
-	// quarantineThreshold is the daemon's configured quarantine score boundary,
-	// learned from the status reply so the TUI labels scores the same way the
-	// daemon does. It defaults to the built-in default until a reply arrives.
 	quarantineThreshold int
 
 	pending   confirmKind
@@ -171,20 +133,14 @@ type Model struct {
 	backoff       time.Duration
 	reconnectWait time.Duration
 
-	// vaultLoaded is false until the first vaultMsg reply arrives, which is
-	// when the vault pane shows its spinner instead of the empty-state frame.
 	vaultLoaded bool
-
-	// spinActive indicates the spinner tick loop is running.
-	spinActive bool
+	spinActive  bool
 
 	spin spinner.Model
 	help help.Model
 }
 
-// NewModel returns a Model that connects to the daemon using dial. version is
-// the TUI/daemon version string shown in the dashboard before the first status
-// reply arrives.
+// NewModel returns a Model that connects to the daemon using dial.
 func NewModel(dial Dialer, version string) *Model {
 	return &Model{
 		dial:                dial,
@@ -195,63 +151,11 @@ func NewModel(dial Dialer, version string) *Model {
 	}
 }
 
-// --- messages ---
-
-type tickMsg time.Time
-
-type connectMsg struct {
-	client Client
-	err    error
-}
-
-type statusMsg struct {
-	client Client
-	status *ipc.StatusResponse
-	err    error
-}
-
-type vaultMsg struct {
-	client Client
-	items  []*quarantine.ItemMetadata
-	err    error
-}
-
-type inspectMsg struct {
-	client Client
-	item   *quarantine.ItemMetadata
-	err    error
-}
-
-type actionMsg struct {
-	client Client
-	kind   confirmKind
-	id     string
-	err    error
-}
-
-type addWatchMsg struct {
-	client Client
-	path   string
-	err    error
-}
-
 // Init starts the refresh loop.
 func (m *Model) Init() tea.Cmd {
 	return tea.Batch(m.refreshCmd(), tickCmd())
 }
 
-// tickCmd is a var so tests can disable the real timer, which would otherwise
-// block the command they drain.
-var tickCmd = func() tea.Cmd {
-	return tea.Tick(RefreshInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
-}
-
-// spinnerTickCmd is a var so tests can stub the spinner timer out, like tickCmd.
-var spinnerTickCmd = func(m spinner.Model) tea.Cmd { return m.Tick }
-
-// spinnerVisible reports whether the active pane shows the spinner: the
-// dashboard before the first status reply and the vault before the first vault
-// list. Never spins while disconnected.
 func (m *Model) spinnerVisible() bool {
 	if !m.connected {
 		return false
@@ -268,10 +172,6 @@ func (m *Model) spinnerVisible() bool {
 	}
 }
 
-// ensureSpinner ensures the spinner tick loop is active while the spinner is
-// visible, or stopped when it is off screen. Arming only on the transition (and
-// re-arming from spinner.TickMsg) keeps one tick chain alive; arming on every
-// Update instead spawns a fresh chain per message and spins the CPU.
 func (m *Model) ensureSpinner(cmd tea.Cmd) tea.Cmd {
 	if !m.spinnerVisible() {
 		m.spinActive = false
@@ -288,96 +188,7 @@ func (m *Model) ensureSpinner(cmd tea.Cmd) tea.Cmd {
 	return tea.Batch(cmd, tick)
 }
 
-// refreshCmd returns a command that reconnects if needed and reloads state.
-func (m *Model) refreshCmd() tea.Cmd {
-	if m.client == nil {
-		if m.reconnectWait > 0 {
-			return nil
-		}
-		return connectCmd(m.dial)
-	}
-	if m.pane == paneVault || !m.vaultLoaded {
-		return fetchCmd(m.client)
-	}
-	return statusOnlyCmd(m.client)
-}
-
-func connectCmd(dial Dialer) tea.Cmd {
-	return func() tea.Msg {
-		if dial == nil {
-			return connectMsg{err: errors.New("no dialer configured")}
-		}
-		c, err := dial()
-		if err != nil {
-			return connectMsg{err: err}
-		}
-		return connectMsg{client: c}
-	}
-}
-
-func statusOnlyCmd(c Client) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		st, err := c.GetStatus(ctx)
-		return statusMsg{client: c, status: st, err: err}
-	}
-}
-
-func vaultOnlyCmd(c Client) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		items, err := c.ListVault(ctx)
-		return vaultMsg{client: c, items: items, err: err}
-	}
-}
-
-func fetchCmd(c Client) tea.Cmd {
-	return tea.Batch(
-		statusOnlyCmd(c),
-		vaultOnlyCmd(c),
-	)
-}
-
-func inspectCmd(c Client, id string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		item, err := c.InspectItem(ctx, id)
-		return inspectMsg{client: c, item: item, err: err}
-	}
-}
-
-func actionCmd(c Client, kind confirmKind, id string) tea.Cmd {
-	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		var err error
-		switch kind {
-		case confirmRestore:
-			err = c.RestoreItem(ctx, id, "")
-		case confirmPurge:
-			err = c.PurgeItem(ctx, id)
-		}
-		return actionMsg{client: c, kind: kind, id: id, err: err}
-	}
-}
-
-func addWatchCmd(c Client, path string) tea.Cmd {
-	return func() tea.Msg {
-		if c == nil {
-			return addWatchMsg{client: c, path: path, err: errors.New("not connected")}
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		err := c.AddWatchPath(ctx, path)
-		return addWatchMsg{client: c, path: path, err: err}
-	}
-}
-
-// Update advances the model. It is intentionally free of tea.Program so tests
-// can drive state transitions directly.
+// Update advances the model.
 func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	model, cmd := m.update(msg)
 	if mm, ok := model.(*Model); ok {
@@ -393,450 +204,24 @@ func (m *Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.help.Width = msg.Width
 		return m, nil
-
 	case tea.KeyMsg:
 		return m.handleKey(msg)
-
 	case tickMsg:
-		if m.client == nil && m.reconnectWait > RefreshInterval {
-			m.reconnectWait -= RefreshInterval
-			return m, tickCmd()
-		}
-		if m.client == nil {
-			// The backoff countdown has expired: reconnect on this tick instead
-			// of burning another full RefreshInterval before trying.
-			m.reconnectWait = 0
-		}
-		return m, tea.Batch(m.refreshCmd(), tickCmd())
-
+		return m.handleTick()
 	case connectMsg:
-		if msg.err != nil {
-			m.connected = false
-			m.lastErr = msg.err
-			m.backoff = nextBackoff(m.backoff)
-			m.reconnectWait = m.backoff
-			return m, nil
-		}
-		m.client = msg.client
-		m.connected = true
-		m.lastErr = nil
-		m.backoff = 0
-		m.reconnectWait = 0
-		return m, fetchCmd(msg.client)
-
+		return m.handleConnect(msg)
 	case spinner.TickMsg:
-		if !m.spinnerVisible() {
-			m.spinActive = false
-			return m, nil
-		}
-		var tick tea.Cmd
-		m.spin, tick = m.spin.Update(msg)
-		return m, tick
-
+		return m.handleSpinnerTick(msg)
 	case statusMsg:
-		if m.handleConnErr(msg.client, msg.err) {
-			return m, nil
-		}
-		if msg.err != nil {
-			m.setNotice(fmt.Sprintf("status failed: %v", msg.err), true)
-			return m, nil
-		}
-		m.status = msg.status
-		if msg.status != nil && msg.status.ThresholdScore > 0 {
-			m.quarantineThreshold = msg.status.ThresholdScore
-		}
-		return m, nil
-
+		return m.handleStatus(msg)
 	case vaultMsg:
-		if m.handleConnErr(msg.client, msg.err) {
-			return m, nil
-		}
-		if msg.err != nil {
-			m.setNotice(fmt.Sprintf("vault failed: %v", msg.err), true)
-			return m, nil
-		}
-		m.items = msg.items
-		m.vaultLoaded = true
-		m.clampCursor()
-		return m, nil
-
+		return m.handleVault(msg)
 	case inspectMsg:
-		if m.handleConnErr(msg.client, msg.err) {
-			return m, nil
-		}
-		if msg.err != nil {
-			m.setNotice(fmt.Sprintf("inspect failed: %v", msg.err), true)
-			return m, nil
-		}
-		m.inspected = msg.item
-		m.pane = paneInspector
-		return m, nil
-
+		return m.handleInspect(msg)
 	case actionMsg:
-		if msg.err != nil {
-			if m.handleConnErr(msg.client, msg.err) {
-				return m, nil
-			}
-			m.setNotice(fmt.Sprintf("%s failed: %v", actionLabel(msg.kind), msg.err), true)
-			return m, nil
-		}
-		m.setNotice(fmt.Sprintf("%s ok: %s", actionLabel(msg.kind), shortID(msg.id)), false)
-		if m.client != nil {
-			return m, fetchCmd(m.client)
-		}
-		return m, nil
-
+		return m.handleAction(msg)
 	case addWatchMsg:
-		if msg.err != nil {
-			if m.handleConnErr(msg.client, msg.err) {
-				return m, nil
-			}
-			m.setNotice(fmt.Sprintf("add watch failed: %v", msg.err), true)
-			return m, nil
-		}
-		m.setNotice(fmt.Sprintf("now watching: %s", msg.path), false)
-		if m.client != nil {
-			return m, fetchCmd(m.client)
-		}
-		return m, nil
+		return m.handleAddWatch(msg)
 	}
 	return m, nil
-}
-
-func actionLabel(k confirmKind) string {
-	switch k {
-	case confirmRestore:
-		return "restore"
-	case confirmPurge:
-		return "purge"
-	default:
-		return "action"
-	}
-}
-
-// handleConnErr reports whether err is a transport failure; if so it drops the
-// client so the tick loop reconnects with backoff. It also rejects replies from
-// a connection that is no longer the active client: a slow RPC that completes
-// successfully after a reconnect must not mutate current model state.
-func (m *Model) handleConnErr(c Client, err error) bool {
-	if m.client == nil || c != m.client {
-		return true // stale reply from a dropped connection
-	}
-	if err == nil {
-		return false
-	}
-	m.lastErr = err
-	if isTransportErr(err) {
-		m.dropClient()
-		return true
-	}
-	return false
-}
-
-// isTransportErr treats protocol-level RPC errors as recoverable non-transport
-// failures and everything else (dial/IO) as a lost connection.
-func isTransportErr(err error) bool {
-	var rpcErr *ipc.RPCError
-	return !errors.As(err, &rpcErr)
-}
-
-func (m *Model) dropClient() {
-	if m.client != nil {
-		_ = m.client.Close()
-	}
-	m.client = nil
-	m.connected = false
-	m.backoff = nextBackoff(m.backoff)
-	m.reconnectWait = m.backoff
-}
-
-func nextBackoff(cur time.Duration) time.Duration {
-	if cur <= 0 {
-		return minBackoff
-	}
-	next := cur * 2
-	if next > maxBackoff {
-		return maxBackoff
-	}
-	return next
-}
-
-func (m *Model) setNotice(s string, isErr bool) {
-	m.notice = s
-	m.noticeErr = isErr
-}
-
-func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if m.enteringPath {
-		return m.handleInputKey(msg)
-	}
-	if m.pending != confirmNone {
-		return m.handleConfirmKey(msg)
-	}
-	switch {
-	case key.Matches(msg, keys.Quit):
-		return m, tea.Quit
-	case key.Matches(msg, keys.ViewDashboard):
-		m.pane = paneDashboard
-		return m, nil
-	case key.Matches(msg, keys.ViewVault):
-		m.pane = paneVault
-		if m.client != nil {
-			return m, vaultOnlyCmd(m.client)
-		}
-		return m, nil
-	case key.Matches(msg, keys.ViewInspector):
-		return m, m.openInspector()
-	case key.Matches(msg, keys.ViewWatch):
-		m.pane = paneWatch
-		return m, nil
-	case key.Matches(msg, keys.AddCustom):
-		m.enteringPath = true
-		m.inputBuffer = customWatchPath
-		return m, nil
-	case key.Matches(msg, keys.Help):
-		m.help.ShowAll = !m.help.ShowAll
-		return m, nil
-	case key.Matches(msg, keys.Next):
-		m.pane = (m.pane + 1) % paneCount
-		if m.pane == paneVault && m.client != nil {
-			return m, vaultOnlyCmd(m.client)
-		}
-		return m, nil
-	case m.pane == paneWatch:
-		switch {
-		case key.Matches(msg, keys.Up):
-			m.moveWatchCursor(-1)
-			return m, nil
-		case key.Matches(msg, keys.Down):
-			m.moveWatchCursor(1)
-			return m, nil
-		case key.Matches(msg, keys.Open) || msg.Type == tea.KeySpace:
-			if m.watchCursor >= 0 && m.watchCursor < len(defaultWatchPresets) {
-				preset := defaultWatchPresets[m.watchCursor]
-				if preset.Path == "" {
-					m.enteringPath = true
-					m.inputBuffer = customWatchPath
-					return m, nil
-				}
-				return m, addWatchCmd(m.client, preset.Path)
-			}
-			return m, nil
-		case key.Matches(msg, keys.Back):
-			m.pane = paneVault
-			return m, nil
-		}
-		return m, nil
-	case m.pane == paneVault && key.Matches(msg, keys.Up):
-		m.moveCursor(-1)
-		return m, nil
-	case m.pane == paneVault && key.Matches(msg, keys.Down):
-		m.moveCursor(1)
-		return m, nil
-	case m.pane == paneVault && key.Matches(msg, keys.Top):
-		m.moveCursor(-len(m.items))
-		return m, nil
-	case m.pane == paneVault && key.Matches(msg, keys.Bottom):
-		m.moveCursor(len(m.items))
-		return m, nil
-	case m.pane == paneVault && key.Matches(msg, keys.PageUp):
-		m.moveCursor(-m.listHeight())
-		return m, nil
-	case m.pane == paneVault && key.Matches(msg, keys.PageDown):
-		m.moveCursor(m.listHeight())
-		return m, nil
-	case key.Matches(msg, keys.Open):
-		return m, m.openInspector()
-	case key.Matches(msg, keys.Back):
-		m.pane = paneVault
-		return m, nil
-	case key.Matches(msg, keys.Restore):
-		if m.actionItem() != nil {
-			m.pending = confirmRestore
-		}
-		return m, nil
-	case key.Matches(msg, keys.Purge):
-		if m.actionItem() != nil {
-			m.pending = confirmPurge
-		}
-		return m, nil
-	}
-	return m, nil
-}
-
-func (m *Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch {
-	case key.Matches(msg, keys.Confirm):
-		item := m.actionItem()
-		kind := m.pending
-		m.pending = confirmNone
-		if item == nil || m.client == nil {
-			m.setNotice("not connected", true)
-			return m, nil
-		}
-		return m, actionCmd(m.client, kind, item.ID)
-	case key.Matches(msg, keys.Cancel), key.Matches(msg, keys.Quit):
-		m.pending = confirmNone
-		return m, nil
-	}
-	return m, nil
-}
-
-func (m *Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyCtrlC:
-		return m, tea.Quit
-	case tea.KeyEnter:
-		path := m.inputBuffer
-		m.enteringPath = false
-		m.inputBuffer = ""
-		return m, addWatchCmd(m.client, path)
-	case tea.KeyEsc:
-		m.enteringPath = false
-		m.inputBuffer = ""
-		return m, nil
-	case tea.KeyBackspace:
-		if len(m.inputBuffer) > 0 {
-			r := []rune(m.inputBuffer)
-			m.inputBuffer = string(r[:len(r)-1])
-		}
-		return m, nil
-	case tea.KeySpace:
-		m.inputBuffer += " "
-		return m, nil
-	case tea.KeyRunes:
-		m.inputBuffer += string(msg.Runes)
-		return m, nil
-	}
-	return m, nil
-}
-
-func (m *Model) moveWatchCursor(delta int) {
-	m.watchCursor += delta
-	if m.watchCursor < 0 {
-		m.watchCursor = 0
-	}
-	if m.watchCursor >= len(defaultWatchPresets) {
-		m.watchCursor = len(defaultWatchPresets) - 1
-	}
-}
-
-// openInspector inspects the selected item (or the item already inspected when
-// the vault is empty), returning a command.
-func (m *Model) openInspector() tea.Cmd {
-	if item := m.selected(); item != nil {
-		if m.client == nil {
-			m.setNotice("not connected", true)
-			return nil
-		}
-		return inspectCmd(m.client, item.ID)
-	}
-	if m.inspected != nil {
-		m.pane = paneInspector
-	}
-	return nil
-}
-
-// actionItem is the item visible in the active vault or inspector pane.
-func (m *Model) actionItem() *quarantine.ItemMetadata {
-	switch m.pane {
-	case paneVault:
-		return m.selected()
-	case paneInspector:
-		return m.inspected
-	default:
-		return nil
-	}
-}
-
-func (m *Model) selected() *quarantine.ItemMetadata {
-	if m.cursor < 0 || m.cursor >= len(m.items) {
-		return nil
-	}
-	return m.items[m.cursor]
-}
-
-func (m *Model) moveCursor(delta int) {
-	if len(m.items) == 0 {
-		return
-	}
-	m.cursor += delta
-	m.clampCursor()
-}
-
-func (m *Model) clampCursor() {
-	if len(m.items) == 0 {
-		m.cursor, m.offset = 0, 0
-		return
-	}
-	if m.cursor < 0 {
-		m.cursor = 0
-	}
-	if m.cursor >= len(m.items) {
-		m.cursor = len(m.items) - 1
-	}
-	m.ensureVisible()
-}
-
-// ensureVisible keeps the cursor inside the scrollable vault window.
-func (m *Model) ensureVisible() {
-	visible := m.listHeight()
-	if visible < 1 {
-		visible = 1
-	}
-	if m.cursor < m.offset {
-		m.offset = m.cursor
-	}
-	if m.cursor >= m.offset+visible {
-		m.offset = m.cursor - visible + 1
-	}
-	if m.offset < 0 {
-		m.offset = 0
-	}
-}
-
-func (m *Model) listHeight() int {
-	// chromeTop (header + tabs + blank) plus the vault title block and the
-	// footer (notice + rule + help).
-	h := m.height - chromeTop - 5
-	if m.notice != "" {
-		h--
-	}
-	if h < 1 {
-		h = 1
-	}
-	return h
-}
-
-func shortID(id string) string {
-	if len(id) > 8 {
-		return id[:8]
-	}
-	return id
-}
-
-func humanBytes(n int64) string {
-	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%dB", n)
-	}
-	div, exp := int64(unit), 0
-	for v := n / unit; v >= unit; v /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), "KMGTPE"[exp])
-}
-
-// verdictFor derives a coarse verdict label from a quarantine score, using the
-// daemon's configured quarantine threshold and the shared ALERT boundary.
-func (m *Model) verdictFor(score int) string {
-	switch {
-	case score >= m.quarantineThreshold:
-		return string(binary.VerdictQuarantine)
-	case score >= binary.AlertScoreThreshold:
-		return string(binary.VerdictAlert)
-	default:
-		return string(binary.VerdictPass)
-	}
 }
