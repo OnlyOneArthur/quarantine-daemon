@@ -5,6 +5,7 @@ import "mvdan.cc/sh/v3/syntax"
 // Verdict defines the triage action verdict.
 type Verdict string
 
+// Verdict values ordered from least to most severe.
 const (
 	VerdictPass       Verdict = "PASS"
 	VerdictAlert      Verdict = "ALERT"
@@ -48,8 +49,8 @@ type TriageResult struct {
 	ExtractedSources []string        `json:"extracted_sources"`
 }
 
-// PKGBUILDAnalysis holds the parsed AST and extracted metadata from a PKGBUILD or install scriptlet.
-type PKGBUILDAnalysis struct {
+// Analysis holds the parsed AST and extracted metadata from a PKGBUILD or install scriptlet.
+type Analysis struct {
 	File     *syntax.File
 	Pkgname  string
 	Pkgnames []string
@@ -62,5 +63,5 @@ type PKGBUILDAnalysis struct {
 	Install         string
 	IsVCSPackage    bool
 	IsInstallScript bool
-	InstallAnalysis *PKGBUILDAnalysis
+	InstallAnalysis *Analysis
 }

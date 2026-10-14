@@ -9,14 +9,14 @@ import (
 )
 
 // ParsePKGBUILD parses a PKGBUILD script and extracts top-level variables and metadata.
-func ParsePKGBUILD(data []byte, path string) (*PKGBUILDAnalysis, error) {
+func ParsePKGBUILD(data []byte, path string) (*Analysis, error) {
 	parser := syntax.NewParser(syntax.Variant(syntax.LangBash))
 	file, err := parser.Parse(bytes.NewReader(data), path)
 	if err != nil {
 		return nil, fmt.Errorf("parse pkgbuild bash ast: %w", err)
 	}
 
-	analysis := &PKGBUILDAnalysis{
+	analysis := &Analysis{
 		File: file,
 	}
 
@@ -27,14 +27,14 @@ func ParsePKGBUILD(data []byte, path string) (*PKGBUILDAnalysis, error) {
 }
 
 // ParseInstallScript parses an Arch *.install scriptlet file.
-func ParseInstallScript(data []byte, path string) (*PKGBUILDAnalysis, error) {
+func ParseInstallScript(data []byte, path string) (*Analysis, error) {
 	parser := syntax.NewParser(syntax.Variant(syntax.LangBash))
 	file, err := parser.Parse(bytes.NewReader(data), path)
 	if err != nil {
 		return nil, fmt.Errorf("parse install scriptlet bash ast: %w", err)
 	}
 
-	analysis := &PKGBUILDAnalysis{
+	analysis := &Analysis{
 		File:            file,
 		IsInstallScript: true,
 	}
@@ -71,10 +71,12 @@ func appendWordPart(sb *strings.Builder, part syntax.WordPart) {
 		}
 	case *syntax.CmdSubst:
 		sb.WriteString("$(cmd)")
+	case *syntax.ProcSubst:
+		sb.WriteString("<(cmd)")
 	}
 }
 
-func extractTopLevelVariables(analysis *PKGBUILDAnalysis, file *syntax.File) {
+func extractTopLevelVariables(analysis *Analysis, file *syntax.File) {
 	for _, stmt := range file.Stmts {
 		if stmt == nil || stmt.Cmd == nil {
 			continue
@@ -95,7 +97,7 @@ func extractTopLevelVariables(analysis *PKGBUILDAnalysis, file *syntax.File) {
 	}
 }
 
-func processAssign(analysis *PKGBUILDAnalysis, assign *syntax.Assign) {
+func processAssign(analysis *Analysis, assign *syntax.Assign) {
 	if assign == nil || assign.Name == nil {
 		return
 	}
@@ -127,7 +129,7 @@ func processAssign(analysis *PKGBUILDAnalysis, assign *syntax.Assign) {
 	assignVariable(analysis, varName, vals, assign.Append, lines)
 }
 
-func assignVariable(analysis *PKGBUILDAnalysis, name string, vals []string, isAppend bool, lines []int) {
+func assignVariable(analysis *Analysis, name string, vals []string, isAppend bool, lines []int) {
 	firstVal := ""
 	if len(vals) > 0 {
 		firstVal = vals[0]
@@ -176,7 +178,7 @@ func assignVariable(analysis *PKGBUILDAnalysis, name string, vals []string, isAp
 	}
 }
 
-func checkIsVCSPackage(analysis *PKGBUILDAnalysis) bool {
+func checkIsVCSPackage(analysis *Analysis) bool {
 	suffixes := []string{"-git", "-hg", "-svn", "-cvs", "-bzr"}
 	checkSuffix := func(name string) bool {
 		for _, s := range suffixes {
@@ -200,16 +202,34 @@ func checkIsVCSPackage(analysis *PKGBUILDAnalysis) bool {
 
 // WalkScope walks the AST while tracking execution scope accurately.
 func WalkScope(file *syntax.File, isInstallScript bool, visitor func(node syntax.Node, scope string) bool) {
+	WalkScopeAncestors(file, isInstallScript, func(node syntax.Node, scope string, _ []syntax.Node) bool {
+		return visitor(node, scope)
+	})
+}
+
+// WalkScopeAncestors is WalkScope with the current node's ancestor chain
+// (root first, immediate parent last) passed to the visitor. The slice aliases
+// internal walk state: it is only valid for the duration of the call and must
+// not be retained.
+func WalkScopeAncestors(file *syntax.File, isInstallScript bool, visitor func(node syntax.Node, scope string, ancestors []syntax.Node) bool) {
 	if file == nil {
 		return
 	}
 
 	if isInstallScript {
+		var stack []syntax.Node
 		syntax.Walk(file, func(node syntax.Node) bool {
 			if node == nil {
+				if len(stack) > 0 {
+					stack = stack[:len(stack)-1]
+				}
 				return false
 			}
-			return visitor(node, ScopeInstallScriptlet)
+			if !visitor(node, ScopeInstallScriptlet, stack) {
+				return false
+			}
+			stack = append(stack, node)
+			return true
 		})
 		return
 	}
@@ -234,7 +254,7 @@ func WalkScope(file *syntax.File, isInstallScript bool, visitor func(node syntax
 			currentScope = ScopeFunction
 		}
 
-		if !visitor(node, currentScope) {
+		if !visitor(node, currentScope, stack) {
 			return false
 		}
 

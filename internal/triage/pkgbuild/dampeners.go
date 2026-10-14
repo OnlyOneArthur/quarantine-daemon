@@ -1,3 +1,5 @@
+// Package pkgbuild triages PKGBUILD and install-scriptlet files for malicious
+// build directives.
 package pkgbuild
 
 import (
@@ -66,7 +68,7 @@ func stagingTarget(path string) (target string, within bool) {
 }
 
 // EvaluateIntegrity applies VCS dampening or flags missing/SKIP checksums on static sources.
-func EvaluateIntegrity(analysis *PKGBUILDAnalysis, cfg *config.Config) ([]ThreatTrigger, []string) {
+func EvaluateIntegrity(analysis *Analysis, cfg *config.Config) ([]ThreatTrigger, []string) {
 	var triggers []ThreatTrigger
 	var dampeners []string
 

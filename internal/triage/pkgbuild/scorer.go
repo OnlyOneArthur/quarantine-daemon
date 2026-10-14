@@ -10,7 +10,7 @@ import (
 )
 
 // ScorePKGBUILD computes the threat score, verdict, and supporting metadata for an analyzed PKGBUILD.
-func ScorePKGBUILD(analysis *PKGBUILDAnalysis, cfg *config.Config, path string) *TriageResult {
+func ScorePKGBUILD(analysis *Analysis, cfg *config.Config, path string) *TriageResult {
 	if analysis == nil {
 		return &TriageResult{
 			Path:             path,
