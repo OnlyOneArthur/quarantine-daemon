@@ -3,6 +3,7 @@ package binary
 import (
 	"bytes"
 	"debug/pe"
+	"slices"
 )
 
 // PEAnalysis holds all findings from static analysis of a PE binary.
@@ -72,16 +73,10 @@ func AnalyzePE(data []byte) (*PEAnalysis, error) {
 		analysis.TextEntropy = CalculateEntropy(data)
 	}
 
-	for _, capability := range capStrings {
-		if bytes.Contains(data, []byte(capability)) {
-			present := false
-			for _, existing := range analysis.SuspiciousCapabilities {
-				if existing == capability {
-					present = true
-					break
-				}
-			}
-			if !present {
+	for i, c := range capBytes {
+		if bytes.Contains(data, c) {
+			capability := capStrings[i]
+			if !slices.Contains(analysis.SuspiciousCapabilities, capability) {
 				analysis.SuspiciousCapabilities = append(analysis.SuspiciousCapabilities, capability)
 			}
 		}

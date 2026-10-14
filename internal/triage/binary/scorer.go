@@ -369,12 +369,13 @@ func TriageBinary(data []byte, path string, cfg *config.Config) (*TriageResult, 
 		})
 	}
 
-	for _, c := range capStrings {
-		if bytes.Contains(data, []byte(c)) {
+	for i, c := range capBytes {
+		if bytes.Contains(data, c) {
+			capName := capStrings[i]
 			res.Triggers = append(res.Triggers, ThreatTrigger{
 				Category:    CategoryCapabilities,
-				Name:        "injection_api_" + c,
-				Description: "High-risk process injection API detected: " + c,
+				Name:        "injection_api_" + capName,
+				Description: "High-risk process injection API detected: " + capName,
 				ScoreWeight: 20,
 			})
 		}

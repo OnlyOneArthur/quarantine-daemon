@@ -5,7 +5,7 @@ import (
 	"debug/elf"
 	"encoding/binary"
 	"errors"
-	"net"
+	"net/netip"
 	"strings"
 )
 
@@ -16,6 +16,22 @@ var (
 
 	iocPatterns = []string{"/dev/tcp/", "sh -i", "bash -i", "| sh", "| bash", "|/bin/sh", "|/bin/bash"}
 	capStrings  = []string{"memfd_create", "process_vm_writev", "VirtualAllocEx", "ptrace"}
+
+	iocPatternBytes = [][]byte{
+		[]byte("/dev/tcp/"),
+		[]byte("sh -i"),
+		[]byte("bash -i"),
+		[]byte("| sh"),
+		[]byte("| bash"),
+		[]byte("|/bin/sh"),
+		[]byte("|/bin/bash"),
+	}
+	capBytes = [][]byte{
+		[]byte("memfd_create"),
+		[]byte("process_vm_writev"),
+		[]byte("VirtualAllocEx"),
+		[]byte("ptrace"),
+	}
 )
 
 // ELFAnalysis holds all findings from static analysis of an ELF binary.
@@ -322,9 +338,9 @@ func inspectRawBytes(data []byte, analysis *ELFAnalysis) {
 	}
 
 	// High-risk process injection & memory execution primitives in raw strings
-	for _, s := range capStrings {
-		if bytes.Contains(data, []byte(s)) {
-			addCapability(analysis, s)
+	for i, c := range capBytes {
+		if bytes.Contains(data, c) {
+			addCapability(analysis, capStrings[i])
 		}
 	}
 
@@ -336,41 +352,41 @@ func inspectRawBytes(data []byte, analysis *ELFAnalysis) {
 // scanRawIOCs inspects bytes for shell payloads and non-private C2 IPv4 addresses.
 func scanRawIOCs(data []byte) []string {
 	var iocs []string
-	for _, p := range iocPatterns {
-		if bytes.Contains(data, []byte(p)) {
-			iocs = append(iocs, p)
+	for i, p := range iocPatternBytes {
+		if bytes.Contains(data, p) {
+			iocs = append(iocs, iocPatterns[i])
 		}
+	}
+
+	seen := make(map[string]struct{}, len(iocs))
+	for _, x := range iocs {
+		seen[x] = struct{}{}
 	}
 
 	// Non-private C2 IP detection
 	forEachIPv4(data, 100, func(m []byte) {
-		ipStr := string(m)
-		ip := net.ParseIP(ipStr)
-		if ip == nil || ip.To4() == nil {
+		addr, err := netip.ParseAddr(string(m))
+		if err != nil || !addr.Is4() {
 			return
 		}
 		// Skip unspecified, loopback, private, link-local, multicast, or broadcast
-		if ip.IsUnspecified() || ip.IsLoopback() || ip.IsPrivate() ||
-			ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsMulticast() {
+		if addr.IsUnspecified() || addr.IsLoopback() || addr.IsPrivate() ||
+			addr.IsLinkLocalUnicast() || addr.IsMulticast() {
 			return
 		}
-		if ip.To4()[0] == 0 || ipStr == "255.255.255.255" {
+		b := addr.As4()
+		if b[0] == 0 || (b[0] == 255 && b[1] == 255 && b[2] == 255 && b[3] == 255) {
 			return
 		}
+		ipStr := addr.String()
 		// Skip common public DNS resolvers and benign infrastructure
 		switch ipStr {
 		case "8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1", "9.9.9.9", "149.112.112.112", "208.67.222.222", "208.67.220.220":
 			return
 		}
 		ioc := "public-c2-ip:" + ipStr
-		found := false
-		for _, existing := range iocs {
-			if existing == ioc {
-				found = true
-				break
-			}
-		}
-		if !found {
+		if _, exists := seen[ioc]; !exists {
+			seen[ioc] = struct{}{}
 			iocs = append(iocs, ioc)
 		}
 	})
@@ -380,7 +396,7 @@ func scanRawIOCs(data []byte) []string {
 // forEachIPv4 scans ASCII addresses with regexp \b boundaries and at most limit matches.
 func forEachIPv4(data []byte, limit int, visit func([]byte)) {
 	for i, count := 0, 0; i < len(data) && count < limit; i++ {
-		if !isDigitByte[data[i]] || i > 0 && isWordByte(data[i-1]) {
+		if !isDigitByte(data[i]) || i > 0 && isWordByte(data[i-1]) {
 			continue
 		}
 		end, ok := parseIPv4Candidate(data, i)
@@ -393,12 +409,9 @@ func forEachIPv4(data []byte, limit int, visit func([]byte)) {
 	}
 }
 
-var isDigitByte = func() (t [256]bool) {
-	for c := byte('0'); c <= '9'; c++ {
-		t[c] = true
-	}
-	return
-}()
+func isDigitByte(b byte) bool {
+	return b >= '0' && b <= '9'
+}
 
 func isWordByte(b byte) bool {
 	return b == '_' || b >= '0' && b <= '9' || b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'

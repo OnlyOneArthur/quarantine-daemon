@@ -464,6 +464,9 @@ func (w *Watcher) waitForFileReady(path string) bool {
 	totalWait := time.Duration(0)
 	maxWait := 500 * time.Millisecond
 
+	timer := time.NewTimer(backoff)
+	defer timer.Stop()
+
 	for {
 		select {
 		case <-w.ctx.Done():
@@ -484,23 +487,25 @@ func (w *Watcher) waitForFileReady(path string) bool {
 		select {
 		case <-w.ctx.Done():
 			return false
-		case <-time.After(backoff):
+		case <-timer.C:
 			totalWait += backoff
 			backoff *= 2
 			if backoff > 100*time.Millisecond {
 				backoff = 100 * time.Millisecond
 			}
+			timer.Reset(backoff)
 		}
 	}
 }
 
 func (w *Watcher) emitEvent(ev Event) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.closed {
+		w.mu.Unlock()
 		return
 	}
-	// Keep the channel open through the send; Close cancels before taking mu.
+	w.mu.Unlock()
+
 	select {
 	case <-w.ctx.Done():
 	case w.events <- ev:
@@ -509,10 +514,12 @@ func (w *Watcher) emitEvent(ev Event) {
 
 func (w *Watcher) sendError(err error) {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.closed {
+		w.mu.Unlock()
 		return
 	}
+	w.mu.Unlock()
+
 	select {
 	case <-w.ctx.Done():
 	case w.errors <- err:

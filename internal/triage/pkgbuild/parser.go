@@ -3,6 +3,7 @@ package pkgbuild
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -178,26 +179,15 @@ func assignVariable(analysis *Analysis, name string, vals []string, isAppend boo
 	}
 }
 
-func checkIsVCSPackage(analysis *Analysis) bool {
-	suffixes := []string{"-git", "-hg", "-svn", "-cvs", "-bzr"}
-	checkSuffix := func(name string) bool {
-		for _, s := range suffixes {
-			if strings.HasSuffix(name, s) {
-				return true
-			}
-		}
-		return false
-	}
+var vcsSuffixes = []string{"-git", "-hg", "-svn", "-cvs", "-bzr"}
 
-	if checkSuffix(analysis.Pkgname) {
-		return true
+func checkIsVCSPackage(analysis *Analysis) bool {
+	hasVCSSuffix := func(name string) bool {
+		return slices.ContainsFunc(vcsSuffixes, func(s string) bool {
+			return strings.HasSuffix(name, s)
+		})
 	}
-	for _, name := range analysis.Pkgnames {
-		if checkSuffix(name) {
-			return true
-		}
-	}
-	return false
+	return hasVCSSuffix(analysis.Pkgname) || slices.ContainsFunc(analysis.Pkgnames, hasVCSSuffix)
 }
 
 // WalkScopeAncestors is WalkScope with the current node's ancestor chain

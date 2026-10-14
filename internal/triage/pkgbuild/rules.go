@@ -166,15 +166,7 @@ func CheckUntrustedSources(analysis *Analysis, cfg *config.Config) []ThreatTrigg
 }
 
 func isLegitimateForge(host string) bool {
-	if _, ok := legitimateForges[host]; ok {
-		return true
-	}
-	for forge := range legitimateForges {
-		if strings.HasSuffix(host, "."+forge) {
-			return true
-		}
-	}
-	return false
+	return isHostMatch(host, legitimateForges)
 }
 
 func isHostMatch(host string, hosts map[string]struct{}) bool {

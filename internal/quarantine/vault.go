@@ -13,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -139,9 +138,9 @@ func (v *Vault) QuarantineFile(srcPath string, score int, triggers []string, cat
 	}
 	hash := hex.EncodeToString(hasher.Sum(nil))
 
-	modTime := time.Now().UTC()
-	if fi, statErr := sf.File.Stat(); statErr == nil {
-		modTime = fi.ModTime()
+	modTime := sf.ModTime
+	if modTime.IsZero() {
+		modTime = time.Now().UTC()
 	}
 
 	dev, ino := sf.Dev, sf.Ino
@@ -346,11 +345,14 @@ func (v *Vault) List() ([]*ItemMetadata, error) {
 			}
 			items = append(items, meta)
 		}
-		sort.Slice(items, func(i, j int) bool {
-			if items[i].QuarantinedAt.Equal(items[j].QuarantinedAt) {
-				return items[i].ID < items[j].ID
+		slices.SortFunc(items, func(a, b *ItemMetadata) int {
+			if a.QuarantinedAt.Equal(b.QuarantinedAt) {
+				return strings.Compare(a.ID, b.ID)
 			}
-			return items[i].QuarantinedAt.After(items[j].QuarantinedAt)
+			if a.QuarantinedAt.After(b.QuarantinedAt) {
+				return -1
+			}
+			return 1
 		})
 		return nil
 	})

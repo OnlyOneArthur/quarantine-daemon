@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -126,6 +127,7 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	sweepTicker := time.NewTicker(time.Hour)
 	defer sweepTicker.Stop()
 	var loopErr error
+	var workers sync.WaitGroup
 loop:
 	for {
 		select {
@@ -145,9 +147,13 @@ loop:
 				loopErr = errors.New("watcher event channel closed")
 				break loop
 			}
-			if _, err := p.handlePath(ev.Path); err != nil {
-				log.Error("pipeline error", "path", ev.Path, "error", err)
-			}
+			workers.Add(1)
+			go func(path string) {
+				defer workers.Done()
+				if _, err := p.handlePath(path); err != nil {
+					log.Error("pipeline error", "path", path, "error", err)
+				}
+			}(ev.Path)
 		case err, ok := <-w.Errors():
 			if ok {
 				log.Warn("watcher error", "error", err)
@@ -162,6 +168,7 @@ loop:
 	if err := w.Close(); err != nil {
 		log.Error("close watcher", "error", err)
 	}
+	workers.Wait()
 	log.Info("shutdown complete", "scanned", p.scanned.Load(), "quarantined", p.quarantined.Load())
 	return loopErr
 }

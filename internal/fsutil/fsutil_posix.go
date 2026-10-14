@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"golang.org/x/sys/unix"
 )
@@ -47,15 +48,16 @@ func OpenSafe(path string) (*SafeFile, error) {
 	// matches the target type.
 	//nolint:unconvert
 	return &SafeFile{
-		File:   f,
-		Path:   cleanPath,
-		Dev:    uint64(st.Dev),
-		Ino:    uint64(st.Ino),
-		Size:   int64(st.Size),
-		Blocks: int64(st.Blocks),
-		Mode:   os.FileMode(st.Mode & 07777),
-		UID:    int(st.Uid),
-		GID:    int(st.Gid),
+		File:    f,
+		Path:    cleanPath,
+		Dev:     uint64(st.Dev),
+		Ino:     uint64(st.Ino),
+		Size:    int64(st.Size),
+		Blocks:  int64(st.Blocks),
+		Mode:    os.FileMode(st.Mode & 07777),
+		UID:     int(st.Uid),
+		GID:     int(st.Gid),
+		ModTime: time.Unix(st.Mtim.Unix()),
 	}, nil
 }
 

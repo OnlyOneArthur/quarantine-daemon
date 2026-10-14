@@ -296,7 +296,10 @@ func (m *Model) refreshCmd() tea.Cmd {
 		}
 		return connectCmd(m.dial)
 	}
-	return fetchCmd(m.client)
+	if m.pane == paneVault || !m.vaultLoaded {
+		return fetchCmd(m.client)
+	}
+	return statusOnlyCmd(m.client)
 }
 
 func connectCmd(dial Dialer) tea.Cmd {
@@ -312,20 +315,28 @@ func connectCmd(dial Dialer) tea.Cmd {
 	}
 }
 
+func statusOnlyCmd(c Client) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		st, err := c.GetStatus(ctx)
+		return statusMsg{client: c, status: st, err: err}
+	}
+}
+
+func vaultOnlyCmd(c Client) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		items, err := c.ListVault(ctx)
+		return vaultMsg{client: c, items: items, err: err}
+	}
+}
+
 func fetchCmd(c Client) tea.Cmd {
 	return tea.Batch(
-		func() tea.Msg {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			st, err := c.GetStatus(ctx)
-			return statusMsg{client: c, status: st, err: err}
-		},
-		func() tea.Msg {
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			items, err := c.ListVault(ctx)
-			return vaultMsg{client: c, items: items, err: err}
-		},
+		statusOnlyCmd(c),
+		vaultOnlyCmd(c),
 	)
 }
 
@@ -570,6 +581,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, keys.ViewVault):
 		m.pane = paneVault
+		if m.client != nil {
+			return m, vaultOnlyCmd(m.client)
+		}
 		return m, nil
 	case key.Matches(msg, keys.ViewInspector):
 		return m, m.openInspector()
@@ -585,6 +599,9 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case key.Matches(msg, keys.Next):
 		m.pane = (m.pane + 1) % paneCount
+		if m.pane == paneVault && m.client != nil {
+			return m, vaultOnlyCmd(m.client)
+		}
 		return m, nil
 	case m.pane == paneWatch:
 		switch {

@@ -46,9 +46,9 @@ func AnalyzeMachO(data []byte) (*MachOAnalysis, error) {
 		analysis.TextEntropy = CalculateEntropy(data)
 	}
 
-	for _, capability := range capStrings {
-		if bytes.Contains(data, []byte(capability)) {
-			analysis.SuspiciousCapabilities = append(analysis.SuspiciousCapabilities, capability)
+	for i, c := range capBytes {
+		if bytes.Contains(data, c) {
+			analysis.SuspiciousCapabilities = append(analysis.SuspiciousCapabilities, capStrings[i])
 		}
 	}
 	analysis.SuspiciousIOCs = scanRawIOCs(data)

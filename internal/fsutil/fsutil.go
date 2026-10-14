@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"time"
 )
 
 // ErrNotRegularFile is returned when a path is not a regular file.
@@ -18,15 +19,16 @@ var (
 // SafeFile is an opened file with the metadata captured at open time, so callers
 // can detect a path being swapped underneath them.
 type SafeFile struct {
-	File   *os.File
-	Path   string
-	Dev    uint64
-	Ino    uint64
-	Size   int64
-	Blocks int64
-	Mode   os.FileMode
-	UID    int
-	GID    int
+	File    *os.File
+	Path    string
+	Dev     uint64
+	Ino     uint64
+	Size    int64
+	Blocks  int64
+	Mode    os.FileMode
+	UID     int
+	GID     int
+	ModTime time.Time
 }
 
 // Close closes the underlying file if one is open.
