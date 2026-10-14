@@ -23,6 +23,7 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 | IPC-03 | `internal/ipc/server.go:76-299` | Spaghetti & Architecture | High | 61 LOC `handleConn` + 59 LOC `Start` + connection pooling and lifecycle intermixed in `server.go` | Resolved |
 | QUA-02 | `internal/quarantine/move_posix.go:57-114` | Spaghetti & Architecture | Medium | 58 LOC `crossDeviceCopy` mixing safe file reading, staging, fsync, rename, inode verification, and unlinking | Resolved |
 | PKG-05 | `internal/triage/pkgbuild/parser.go:197-251` | Spaghetti & Architecture | Low | 55 LOC `WalkScopeAncestors` intermixing install scriptlet AST traversal and PKGBUILD function-depth scope tracking | Resolved |
+| CMD-01 | `cmd/quarantined/main.go:92-174` | Spaghetti & Architecture | High | 83 LOC `run` intermixing signal trap, vault setup, inotify watcher, pipeline wiring, IPC launch, hourly ticker, event loop, and shutdown | Resolved |
 
 ---
 
@@ -370,3 +371,23 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 - **Expected Impact:**
   - `WalkScopeAncestors` eliminated as >50 LOC violation.
   - Net metric reduction of 1 violation (2 -> 1).
+
+---
+
+### [CMD-01] Monolithic 83 LOC Daemon `run` Coordinator in Main Entrypoint
+
+- **File & Location:** `cmd/quarantined/main.go:92-174`
+- **Issue Category:** Spaghetti & Architecture
+- **Severity:** High
+- **Current State:**
+  `cmd/quarantined/main.go` implemented the entire daemon lifecycle inside a single 83 LOC `run` function. Initialization of vault, watcher, pipeline, and IPC server was entangled with the select event loop (handling OS signals, hourly retention sweeps, IPC server errors, watcher event dispatching, and error logging) and sequential shutdown logic.
+- **Refactored Code:**
+  - Extracted vault initialization and limit configuration into `initVault` (11 LOC).
+  - Extracted watcher initialization into `initWatcher` (11 LOC).
+  - Extracted IPC server startup into `startIPC` (10 LOC).
+  - Extracted event handling select loop into `runEventLoop` (43 LOC).
+  - Streamlined `run` into a clean 33 LOC coordinator.
+- **Expected Impact:**
+  - `run` eliminated as >50 LOC violation.
+  - Final hotspot eliminated across the entire codebase.
+  - Net metric reduction of 1 violation (1 -> 0).

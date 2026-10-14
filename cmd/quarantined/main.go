@@ -93,41 +93,77 @@ func run(cfg *config.Config, log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	vault, err := quarantine.New(cfg.Quarantine.VaultDir)
+	vault, err := initVault(cfg)
 	if err != nil {
-		return fmt.Errorf("open vault: %w", err)
+		return err
 	}
 	defer func() { _ = vault.Close() }()
-	vault.SetLimits(cfg.Quarantine.MaxVaultSizeMB, cfg.Quarantine.RetentionDays)
-	if err := vault.Sweep(); err != nil {
-		return fmt.Errorf("sweep vault: %w", err)
+
+	w, err := initWatcher(cfg)
+	if err != nil {
+		return err
 	}
 
+	p := newPipeline(cfg, vault, log)
+	ctrl := newDaemonController(p, w, cfg, Version)
+	srv, srvErr := startIPC(ctx, cfg, vault, ctrl)
+
+	log.Info("daemon running", "socket", cfg.Service.SocketPath)
+
+	loopErr := runEventLoop(ctx, log, vault, w, p, srvErr)
+
+	log.Info("shutting down host quarantine daemon")
+	if err := srv.Stop(); err != nil {
+		log.Error("stop ipc server", "error", err)
+	}
+	if err := w.Close(); err != nil {
+		log.Error("close watcher", "error", err)
+	}
+	log.Info("shutdown complete", "scanned", p.scanned.Load(), "quarantined", p.quarantined.Load())
+	return loopErr
+}
+
+func initVault(cfg *config.Config) (*quarantine.Vault, error) {
+	vault, err := quarantine.New(cfg.Quarantine.VaultDir)
+	if err != nil {
+		return nil, fmt.Errorf("open vault: %w", err)
+	}
+	vault.SetLimits(cfg.Quarantine.MaxVaultSizeMB, cfg.Quarantine.RetentionDays)
+	if err := vault.Sweep(); err != nil {
+		_ = vault.Close()
+		return nil, fmt.Errorf("sweep vault: %w", err)
+	}
+	return vault, nil
+}
+
+func initWatcher(cfg *config.Config) (*watcher.Watcher, error) {
 	w, err := watcher.New(watcher.Config{
 		Roots:            cfg.Paths.Watch,
 		IgnoreExtensions: cfg.Paths.IgnoreExtensions,
 		DebounceDelay:    time.Duration(cfg.Service.PollIntervalMs) * time.Millisecond,
 	})
 	if err != nil {
-		return fmt.Errorf("start watcher: %w", err)
+		return nil, fmt.Errorf("start watcher: %w", err)
 	}
+	return w, nil
+}
 
-	p := newPipeline(cfg, vault, log)
-	ctrl := newDaemonController(p, w, cfg, Version)
-
+func startIPC(ctx context.Context, cfg *config.Config, vault *quarantine.Vault, ctrl *daemonController) (*ipc.Server, <-chan error) {
 	srv := ipc.NewServer(cfg.Service.SocketPath, vault, ctrl)
 	srv.SetWatchManager(ctrl)
 	srvErr := make(chan error, 1)
 	go func() {
 		srvErr <- srv.Start(ctx)
 	}()
+	return srv, srvErr
+}
 
-	log.Info("daemon running", "socket", cfg.Service.SocketPath)
-
+func runEventLoop(ctx context.Context, log *slog.Logger, vault *quarantine.Vault, w *watcher.Watcher, p *pipeline, srvErr <-chan error) error {
 	sweepTicker := time.NewTicker(time.Hour)
 	defer sweepTicker.Stop()
 	var loopErr error
 	var workers sync.WaitGroup
+
 loop:
 	for {
 		select {
@@ -161,14 +197,6 @@ loop:
 		}
 	}
 
-	log.Info("shutting down host quarantine daemon")
-	if err := srv.Stop(); err != nil {
-		log.Error("stop ipc server", "error", err)
-	}
-	if err := w.Close(); err != nil {
-		log.Error("close watcher", "error", err)
-	}
 	workers.Wait()
-	log.Info("shutdown complete", "scanned", p.scanned.Load(), "quarantined", p.quarantined.Load())
 	return loopErr
 }
