@@ -19,6 +19,7 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 | PKG-04 | `internal/triage/pkgbuild/dampeners.go:35-107` | Spaghetti & Architecture | Medium | 71 LOC `EvaluateIntegrity` intermixing VCS exemptions, missing checksum checks & inline SKIP closures | Resolved |
 | BIN-03 | `internal/triage/binary/detector.go:22-87` | Spaghetti & Architecture | Medium | 65 LOC `DetectFormat` intermixing script shebang, ELF, Mach-O universal, and PE header parsing | Resolved |
 | BIN-04 | `internal/triage/binary/pe.go:19-78` | Spaghetti & Architecture | Medium | 69 LOC `AnalyzePE` mixing section characteristic analysis, import inspection, and raw capability scans | Resolved |
+| IPC-02 | `internal/ipc/client.go:69-134` | Spaghetti & Architecture | Medium | 65 LOC `call` intermixing request preparation, redial/retry exchanges, and response parsing | Resolved |
 
 ---
 
@@ -292,3 +293,21 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 - **Expected Impact:**
   - `AnalyzePE` eliminated as >50 LOC violation.
   - Net metric reduction of 1 violation (7 -> 6).
+
+---
+
+### [IPC-02] Oversized `call` in IPC Client
+
+- **File & Location:** `internal/ipc/client.go:69-134`
+- **Issue Category:** Spaghetti & Architecture
+- **Severity:** Medium
+- **Current State:**
+  `call` was a 65 LOC method in `internal/ipc/client.go` combining parameter serialization, sequence assignment, request packaging, transport failure handling with idempotent redials, JSON response unmarshaling, stream desynchronization checks, and response error decoding into a single routine.
+- **Refactored Code:**
+  - Decomposed request serialization into `prepareRequest` (18 LOC).
+  - Decomposed transport exchange and idempotent retry logic into `executeExchange` (21 LOC).
+  - Decomposed response validation and stream deserialization into `decodeResponse` (19 LOC).
+  - Streamlined `call` into a concise 16 LOC coordinator.
+- **Expected Impact:**
+  - `call` eliminated as >50 LOC violation.
+  - Net metric reduction of 1 violation (6 -> 5).

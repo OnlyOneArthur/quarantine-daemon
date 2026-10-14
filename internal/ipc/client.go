@@ -70,11 +70,25 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	req := Request{Method: method}
+	req, payload, err := c.prepareRequest(method, params)
+	if err != nil {
+		return err
+	}
+
+	line, err := c.executeExchange(ctx, method, payload)
+	if err != nil {
+		return err
+	}
+
+	return c.decodeResponse(line, req.ID, out)
+}
+
+func (c *Client) prepareRequest(method string, params any) (*Request, []byte, error) {
+	req := &Request{Method: method}
 	if params != nil {
 		raw, err := json.Marshal(params)
 		if err != nil {
-			return fmt.Errorf("marshal params: %w", err)
+			return nil, nil, fmt.Errorf("marshal params: %w", err)
 		}
 		req.Params = raw
 	}
@@ -83,43 +97,45 @@ func (c *Client) call(ctx context.Context, method string, params any, out any) e
 
 	payload, err := json.Marshal(req)
 	if err != nil {
-		return fmt.Errorf("marshal request: %w", err)
+		return nil, nil, fmt.Errorf("marshal request: %w", err)
 	}
-	payload = append(payload, '\n')
+	return req, append(payload, '\n'), nil
+}
 
+func (c *Client) executeExchange(ctx context.Context, method string, payload []byte) ([]byte, error) {
 	if err := ctx.Err(); err != nil {
-		return err
+		return nil, err
 	}
 	if c.conn == nil {
 		if err := c.dial(); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	line, err := c.exchange(ctx, payload)
 	if err != nil {
 		if !isIdempotent(method) || ctx.Err() != nil {
-			return err
+			return nil, err
 		}
 		if dialErr := c.dial(); dialErr != nil {
-			return dialErr
+			return nil, dialErr
 		}
-		line, err = c.exchange(ctx, payload)
-		if err != nil {
-			return err
-		}
+		return c.exchange(ctx, payload)
 	}
+	return line, nil
+}
 
+func (c *Client) decodeResponse(line []byte, reqID string, out any) error {
 	var resp Response
 	if err := json.Unmarshal(line, &resp); err != nil {
 		return fmt.Errorf("decode response: %w", err)
 	}
-	if resp.ID != req.ID {
+	if resp.ID != reqID {
 		// A synchronous client only ever has one request in flight, so a
 		// mismatched id means the stream is desynchronized (or corrupted).
 		// Drop the connection and surface it as a transport error so an
 		// idempotent call can redial and retry cleanly.
 		c.drop()
-		return fmt.Errorf("response id %q does not match request id %q", resp.ID, req.ID)
+		return fmt.Errorf("response id %q does not match request id %q", resp.ID, reqID)
 	}
 	if resp.Error != nil {
 		return resp.Error
