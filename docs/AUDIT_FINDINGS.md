@@ -14,6 +14,7 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 | TUI-01 | `internal/tui/model.go:390-666` | Spaghetti & Architecture | High | 842 LOC file + 115 LOC `update`, 97 LOC `handleKey` | Resolved |
 | TUI-02 | `internal/tui/view.go:207-670` | Spaghetti & Architecture | High | 729 LOC file + 67 LOC `renderWatchPane` | Resolved |
 | PKG-02 | `internal/triage/pkgbuild/rules.go:96-594` | Spaghetti & Architecture | High | 594 LOC file + 70 LOC `checkCallExpr`, 55 LOC `checkTamperingCommand`, 51 LOC `cmdSubstOutputExecuted` | Resolved |
+| WAT-01 | `internal/watcher/watcher.go:1-565` | Spaghetti & Architecture | High | 565 LOC file mixing monitoring, debouncing, file readiness polling, and reconcile walks | Resolved |
 
 ---
 
@@ -196,3 +197,21 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
   - `cmdSubstOutputExecuted` eliminated as >50 LOC violation.
   - `internal/triage/pkgbuild/rules.go` line count dropped from 594 LOC to 217 LOC (<= 300 LOC limit).
   - Net metric reduction of 4 violations (15 -> 11).
+
+---
+
+### [WAT-01] Oversized Filesystem Watcher, Debouncing Engine & Reconcile Loop
+
+- **File & Location:** `internal/watcher/watcher.go:1-565`
+- **Issue Category:** Spaghetti & Architecture
+- **Severity:** High
+- **Current State:**
+  `internal/watcher/watcher.go` was 565 LOC (the last remaining file in the codebase exceeding the 300 LOC limit). It bundled core `fsnotify` directory registration, recursive tree walking, configuration parsing, debounce timer management, safe file readiness polling, event dispatching, and queue overflow reconciliation in a single oversized file.
+- **Refactored Code:**
+  - Extracted debounce timer lifecycle, event loop, file readiness polling, and event dispatching into `internal/watcher/debounce.go` (228 LOC).
+  - Extracted queue overflow reconciliation and tree recovery walks into `internal/watcher/reconcile.go` (42 LOC).
+  - Extracted `parseIgnoreExtensions` in `internal/watcher/watcher.go` to keep `New` concise and adopted `slices.Contains`.
+  - Reduced `internal/watcher/watcher.go` from 565 LOC to 269 LOC (<= 300 LOC limit).
+- **Expected Impact:**
+  - Eliminated the last >300 LOC file violation across the entire repository (0 files >300 LOC remaining).
+  - Net metric reduction of 1 violation (11 -> 10).
