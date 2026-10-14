@@ -3,9 +3,8 @@ package binary
 import (
 	"bytes"
 	"debug/elf"
-	"encoding/binary"
 	"errors"
-	"net/netip"
+	"slices"
 	"strings"
 )
 
@@ -13,25 +12,6 @@ import (
 var (
 	ErrNotELF       = errors.New("not an ELF binary")
 	ErrELFTruncated = errors.New("ELF binary truncated")
-
-	iocPatterns = []string{"/dev/tcp/", "sh -i", "bash -i", "| sh", "| bash", "|/bin/sh", "|/bin/bash"}
-	capStrings  = []string{"memfd_create", "process_vm_writev", "VirtualAllocEx", "ptrace"}
-
-	iocPatternBytes = [][]byte{
-		[]byte("/dev/tcp/"),
-		[]byte("sh -i"),
-		[]byte("bash -i"),
-		[]byte("| sh"),
-		[]byte("| bash"),
-		[]byte("|/bin/sh"),
-		[]byte("|/bin/bash"),
-	}
-	capBytes = [][]byte{
-		[]byte("memfd_create"),
-		[]byte("process_vm_writev"),
-		[]byte("VirtualAllocEx"),
-		[]byte("ptrace"),
-	}
 )
 
 // ELFAnalysis holds all findings from static analysis of an ELF binary.
@@ -82,7 +62,14 @@ func AnalyzeELF(data []byte) (*ELFAnalysis, error) {
 }
 
 func analyzeWithDebugELF(f *elf.File, data []byte, analysis *ELFAnalysis) {
-	for _, prog := range f.Progs {
+	inspectELFProgramHeaders(f.Progs, analysis)
+	inspectELFTextSection(f.Section(".text"), data, analysis)
+	inspectELFSections(f.Sections, analysis)
+	inspectELFSymbols(f, analysis)
+}
+
+func inspectELFProgramHeaders(progs []*elf.Prog, analysis *ELFAnalysis) {
+	for _, prog := range progs {
 		switch prog.Type {
 		case elf.PT_LOAD:
 			analysis.HasValidPTLoad = true
@@ -99,28 +86,31 @@ func analyzeWithDebugELF(f *elf.File, data []byte, analysis *ELFAnalysis) {
 			}
 		}
 	}
+}
 
+func inspectELFTextSection(sec *elf.Section, data []byte, analysis *ELFAnalysis) {
 	// Calculate entropy strictly on .text section if present. Slice the already
 	// resident data buffer instead of copying the section through io.ReadAll,
 	// which would allocate up to 64MiB on every scan. Compressed sections are
 	// skipped because their on-disk bytes are not the real code.
-	sec := f.Section(".text")
-	if sec != nil && sec.Size > 0 && sec.Flags&elf.SHF_COMPRESSED == 0 {
-		const maxEntropyBytes = 64 * 1024 * 1024
-		start, end := sec.Offset, sec.Offset+sec.Size
-		if sec.Size > maxEntropyBytes {
-			end = start + maxEntropyBytes
-		}
-		if start < uint64(len(data)) && end >= start && end <= uint64(len(data)) {
-			analysis.TextSectionFound = true
-			if end > start {
-				analysis.TextEntropy = CalculateEntropy(data[start:end])
-			}
+	if sec == nil || sec.Size == 0 || sec.Flags&elf.SHF_COMPRESSED != 0 {
+		return
+	}
+	const maxEntropyBytes = 64 * 1024 * 1024
+	start, end := sec.Offset, sec.Offset+sec.Size
+	if sec.Size > maxEntropyBytes {
+		end = start + maxEntropyBytes
+	}
+	if start < uint64(len(data)) && end >= start && end <= uint64(len(data)) {
+		analysis.TextSectionFound = true
+		if end > start {
+			analysis.TextEntropy = CalculateEntropy(data[start:end])
 		}
 	}
+}
 
-	// Check section names for UPX
-	for _, s := range f.Sections {
+func inspectELFSections(sections []*elf.Section, analysis *ELFAnalysis) {
+	for _, s := range sections {
 		if strings.HasPrefix(s.Name, "UPX") || strings.HasPrefix(s.Name, ".upx") {
 			analysis.HasUPX = true
 		}
@@ -131,28 +121,22 @@ func analyzeWithDebugELF(f *elf.File, data []byte, analysis *ELFAnalysis) {
 			analysis.IsRustBinary = true
 		}
 	}
+}
 
-	// Inspect symbols
-	symbols, err := f.Symbols()
-	if err == nil {
+func inspectELFSymbols(f *elf.File, analysis *ELFAnalysis) {
+	if symbols, err := f.Symbols(); err == nil {
 		for _, sym := range symbols {
-			name := sym.Name
-			checkSymbol(name, analysis)
+			checkSymbol(sym.Name, analysis)
 		}
 	}
 
-	// Inspect dynamic symbols
-	dynsyms, err := f.DynamicSymbols()
-	if err == nil {
+	if dynsyms, err := f.DynamicSymbols(); err == nil {
 		for _, sym := range dynsyms {
-			name := sym.Name
-			checkSymbol(name, analysis)
+			checkSymbol(sym.Name, analysis)
 		}
 	}
 
-	// Inspect imported symbols
-	imported, err := f.ImportedSymbols()
-	if err == nil {
+	if imported, err := f.ImportedSymbols(); err == nil {
 		for _, sym := range imported {
 			checkSymbol(sym.Name, analysis)
 		}
@@ -179,141 +163,17 @@ func checkCapabilityString(str string, analysis *ELFAnalysis) {
 }
 
 func addCapability(analysis *ELFAnalysis, capability string) {
-	for _, existing := range analysis.SuspiciousCapabilities {
-		if existing == capability {
-			return
-		}
+	if slices.Contains(analysis.SuspiciousCapabilities, capability) {
+		return
 	}
 	analysis.SuspiciousCapabilities = append(analysis.SuspiciousCapabilities, capability)
 }
 
 func addIOC(analysis *ELFAnalysis, ioc string) {
-	for _, existing := range analysis.SuspiciousIOCs {
-		if existing == ioc {
-			return
-		}
+	if slices.Contains(analysis.SuspiciousIOCs, ioc) {
+		return
 	}
 	analysis.SuspiciousIOCs = append(analysis.SuspiciousIOCs, ioc)
-}
-
-func parseRawELFHeaders(data []byte, analysis *ELFAnalysis) error {
-	if len(data) < 16 {
-		return ErrELFTruncated
-	}
-
-	eiClass := data[4]
-	eiData := data[5]
-
-	var byteOrder binary.ByteOrder
-	switch eiData {
-	case 1:
-		byteOrder = binary.LittleEndian
-	case 2:
-		byteOrder = binary.BigEndian
-	default:
-		return errors.New("unknown ELF endianness")
-	}
-
-	processProgHeader := func(pType, pFlags uint32, pOffset, pFilesz uint64) {
-		switch pType {
-		case 1: // PT_LOAD
-			analysis.HasValidPTLoad = true
-
-			if pFlags&1 != 0 && !analysis.TextSectionFound { // PF_X
-				if pFilesz > 0 && pOffset <= uint64(len(data)) && pFilesz <= uint64(len(data))-pOffset {
-					analysis.TextEntropy = CalculateEntropy(data[pOffset : pOffset+pFilesz])
-					analysis.TextSectionFound = true
-				}
-			}
-
-			if (pFlags & 3) == 3 { // PF_X | PF_W
-				analysis.HasRWXSegments = true
-			}
-		case 0x6474e551: // PT_GNU_STACK
-			if pFlags&1 != 0 { // PF_X
-				analysis.HasExecutableStack = true
-			}
-		}
-	}
-
-	switch eiClass {
-	case 1: // 32-bit
-		if len(data) < 52 {
-			return ErrELFTruncated
-		}
-		phoff := uint64(byteOrder.Uint32(data[28:32]))
-		shoff := uint64(byteOrder.Uint32(data[32:36]))
-		phentsize := int(byteOrder.Uint16(data[42:44]))
-		phnum := int(byteOrder.Uint16(data[44:46]))
-		shentsize := int(byteOrder.Uint16(data[46:48]))
-		shnum := int(byteOrder.Uint16(data[48:50]))
-
-		if phnum > 0 && phoff > 0 && phentsize >= 32 {
-			for i := 0; i < phnum; i++ {
-				// Offsets stay in uint64: phoff comes from the file and can overflow int.
-				poff := phoff + uint64(i)*uint64(phentsize)
-				if poff < phoff || poff+32 < poff || poff+32 > uint64(len(data)) {
-					break
-				}
-				off := int(poff)
-				pType := byteOrder.Uint32(data[off : off+4])
-				pOffset := uint64(byteOrder.Uint32(data[off+4 : off+8]))
-				pFilesz := uint64(byteOrder.Uint32(data[off+16 : off+20]))
-				pFlags := byteOrder.Uint32(data[off+24 : off+28])
-				processProgHeader(pType, pFlags, pOffset, pFilesz)
-			}
-		}
-
-		if analysis.HasValidPTLoad && sectionTableInvalid(shoff, shnum, shentsize, len(data)) {
-			analysis.CorruptedSectionHeaders = true
-		}
-
-	case 2: // 64-bit
-		if len(data) < 64 {
-			return ErrELFTruncated
-		}
-		phoff := byteOrder.Uint64(data[32:40])
-		shoff := byteOrder.Uint64(data[40:48])
-		phentsize := int(byteOrder.Uint16(data[54:56]))
-		phnum := int(byteOrder.Uint16(data[56:58]))
-		shentsize := int(byteOrder.Uint16(data[58:60]))
-		shnum := int(byteOrder.Uint16(data[60:62]))
-
-		if phnum > 0 && phoff > 0 && phentsize >= 56 {
-			for i := 0; i < phnum; i++ {
-				// Offsets stay in uint64: phoff comes from the file and can overflow int.
-				poff := phoff + uint64(i)*uint64(phentsize)
-				if poff < phoff || poff+56 < poff || poff+56 > uint64(len(data)) {
-					break
-				}
-				off := int(poff)
-				pType := byteOrder.Uint32(data[off : off+4])
-				pFlags := byteOrder.Uint32(data[off+4 : off+8])
-				pOffset := byteOrder.Uint64(data[off+8 : off+16])
-				pFilesz := byteOrder.Uint64(data[off+32 : off+40])
-				processProgHeader(pType, pFlags, pOffset, pFilesz)
-			}
-		}
-
-		if analysis.HasValidPTLoad && sectionTableInvalid(shoff, shnum, shentsize, len(data)) {
-			analysis.CorruptedSectionHeaders = true
-		}
-
-	default:
-		return errors.New("unknown ELF class")
-	}
-
-	return nil
-}
-
-// sectionTableInvalid reports whether the section header table is missing or
-// points outside the file. All arithmetic stays in uint64: shoff is
-// attacker-controlled and can wrap or go negative when cast to int.
-func sectionTableInvalid(shoff uint64, shnum, shentsize, dataLen int) bool {
-	if shoff == 0 || shoff > uint64(dataLen) || shnum == 0 || shentsize <= 0 {
-		return true
-	}
-	return uint64(shnum)*uint64(shentsize) > uint64(dataLen)-shoff
 }
 
 func inspectRawBytes(data []byte, analysis *ELFAnalysis) {
@@ -347,93 +207,4 @@ func inspectRawBytes(data []byte, analysis *ELFAnalysis) {
 	for _, ioc := range scanRawIOCs(data) {
 		addIOC(analysis, ioc)
 	}
-}
-
-// scanRawIOCs inspects bytes for shell payloads and non-private C2 IPv4 addresses.
-func scanRawIOCs(data []byte) []string {
-	var iocs []string
-	for i, p := range iocPatternBytes {
-		if bytes.Contains(data, p) {
-			iocs = append(iocs, iocPatterns[i])
-		}
-	}
-
-	seen := make(map[string]struct{}, len(iocs))
-	for _, x := range iocs {
-		seen[x] = struct{}{}
-	}
-
-	// Non-private C2 IP detection
-	forEachIPv4(data, 100, func(m []byte) {
-		addr, err := netip.ParseAddr(string(m))
-		if err != nil || !addr.Is4() {
-			return
-		}
-		// Skip unspecified, loopback, private, link-local, multicast, or broadcast
-		if addr.IsUnspecified() || addr.IsLoopback() || addr.IsPrivate() ||
-			addr.IsLinkLocalUnicast() || addr.IsMulticast() {
-			return
-		}
-		b := addr.As4()
-		if b[0] == 0 || (b[0] == 255 && b[1] == 255 && b[2] == 255 && b[3] == 255) {
-			return
-		}
-		ipStr := addr.String()
-		// Skip common public DNS resolvers and benign infrastructure
-		switch ipStr {
-		case "8.8.8.8", "8.8.4.4", "1.1.1.1", "1.0.0.1", "9.9.9.9", "149.112.112.112", "208.67.222.222", "208.67.220.220":
-			return
-		}
-		ioc := "public-c2-ip:" + ipStr
-		if _, exists := seen[ioc]; !exists {
-			seen[ioc] = struct{}{}
-			iocs = append(iocs, ioc)
-		}
-	})
-	return iocs
-}
-
-// forEachIPv4 scans ASCII addresses with regexp \b boundaries and at most limit matches.
-func forEachIPv4(data []byte, limit int, visit func([]byte)) {
-	for i, count := 0, 0; i < len(data) && count < limit; i++ {
-		if !isDigitByte(data[i]) || i > 0 && isWordByte(data[i-1]) {
-			continue
-		}
-		end, ok := parseIPv4Candidate(data, i)
-		if !ok || end < len(data) && isWordByte(data[end]) {
-			continue
-		}
-		visit(data[i:end])
-		count++
-		i = end - 1
-	}
-}
-
-func isDigitByte(b byte) bool {
-	return b >= '0' && b <= '9'
-}
-
-func isWordByte(b byte) bool {
-	return b == '_' || b >= '0' && b <= '9' || b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z'
-}
-
-func parseIPv4Candidate(data []byte, start int) (int, bool) {
-	i := start
-	for octet := 0; octet < 4; octet++ {
-		begin, value := i, 0
-		for i < len(data) && data[i] >= '0' && data[i] <= '9' && i-begin < 3 {
-			value = value*10 + int(data[i]-'0')
-			i++
-		}
-		if i == begin || value > 255 || i < len(data) && data[i] >= '0' && data[i] <= '9' {
-			return start, false
-		}
-		if octet < 3 {
-			if i == len(data) || data[i] != '.' {
-				return start, false
-			}
-			i++
-		}
-	}
-	return i, true
 }

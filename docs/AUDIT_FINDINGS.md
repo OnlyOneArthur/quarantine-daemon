@@ -9,6 +9,7 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
 | IPC-01 | `internal/ipc/server.go:311-435` | Spaghetti & Architecture | High | Monolithic 124 LOC `dispatch` routing + error mapping | Resolved |
 | PKG-01 | `internal/triage/pkgbuild/rules.go:47-166` | Spaghetti & Architecture | High | Oversized 120 LOC `CheckUntrustedSources` mixing URL/host parsing & trigger synthesis | Resolved |
 | BIN-01 | `internal/triage/binary/scorer.go:300-412` | Spaghetti & Architecture | High | Monolithic 113 LOC `TriageBinary` + 68 LOC `calculateCappedScore` | Resolved |
+| BIN-02 | `internal/triage/binary/elf.go:84-308` | Spaghetti & Architecture | High | Oversized 109 LOC `parseRawELFHeaders` & 77 LOC `analyzeWithDebugELF` + 439 LOC file | Resolved |
 
 ---
 
@@ -75,3 +76,27 @@ Comprehensive audit findings across Performance, Bloat, Spaghetti Architecture, 
   - `calculateCappedScore` eliminated as >50 LOC violation.
   - `internal/triage/binary/scorer.go` reduced from 412 LOC to 296 LOC (<=300 LOC limit).
   - Total violations reduced by 3.
+
+---
+
+### [BIN-02] Oversized ELF Parser & Raw Header Analyzer
+
+- **File & Location:** `internal/triage/binary/elf.go:84-308`
+- **Issue Category:** Spaghetti & Architecture
+- **Severity:** High
+- **Current State:**
+  `internal/triage/binary/elf.go` was 439 LOC containing three major violations:
+  1. `parseRawELFHeaders` (109 LOC) intermixed 32-bit and 64-bit ELF program header parsing with endianness handling and section table boundary verification.
+  2. `analyzeWithDebugELF` (77 LOC) performed program header inspection, .text entropy calculation, section name UPX checks, and multi-table symbol inspection sequentially in one function.
+  3. Raw ASCII IOC and IPv4 network candidate extraction logic was bundled directly into `elf.go` despite being used across multiple binary triage routines.
+- **Refactored Code:**
+  - Extracted raw ELF parsing into `internal/triage/binary/elf_raw.go`: split into `parseRawELFHeaders` (23 LOC), `parseELF32Headers` (31 LOC), `parseELF64Headers` (31 LOC), `processProgHeader` (23 LOC), and `sectionTableInvalid` (7 LOC).
+  - Modernized `for` loops using range over integers (`for i := range phnum`).
+  - Decomposed `analyzeWithDebugELF` in `elf.go` into targeted inspection helpers (`inspectELFProgramHeaders`, `inspectELFTextSection`, `inspectELFSections`, `inspectELFSymbols`), each <= 18 LOC.
+  - Extracted IOC pattern constants, IPv4 candidate parser, and raw IOC scanners to `internal/triage/binary/ioc.go` (116 LOC).
+  - Adopted `slices.Contains` in `addCapability` and `addIOC`.
+- **Expected Impact:**
+  - `parseRawELFHeaders` eliminated as >50 LOC violation.
+  - `analyzeWithDebugELF` eliminated as >50 LOC violation.
+  - `internal/triage/binary/elf.go` line count dropped from 439 LOC to 210 LOC (<=300 LOC limit).
+  - Net metric reduction of 3 violations (27 -> 24).
