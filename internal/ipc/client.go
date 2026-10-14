@@ -245,4 +245,3 @@ func (c *Client) PurgeItem(ctx context.Context, id string) error {
 func (c *Client) AddWatchPath(ctx context.Context, path string) error {
 	return c.call(ctx, MethodAddWatchPath, AddWatchPathParams{Path: path}, nil)
 }
-
