@@ -13,13 +13,16 @@ import (
 
 func (m *Model) renderDashboard() string {
 	var b strings.Builder
-	b.WriteString(m.renderDashboardHeader() + "\n\n")
+	b.WriteString(m.renderDashboardHeader())
+	b.WriteString("\n\n")
 
 	if !m.connected {
-		return b.String() + m.renderOfflineFrame()
+		b.WriteString(m.renderOfflineFrame())
+		return b.String()
 	}
 	if m.status == nil {
-		b.WriteString(m.renderSpinner("loading status") + "\n")
+		b.WriteString(m.renderSpinner("loading status"))
+		b.WriteByte('\n')
 		return b.String()
 	}
 
@@ -30,15 +33,21 @@ func (m *Model) renderDashboard() string {
 		"    ",
 		statBlock("quarantined", fmt.Sprintf("%d", m.status.QuarantineCount), errStyle),
 	)
-	b.WriteString(stats + "\n\n")
-	b.WriteString(labelStyle.Width(labelWidth).Render("version") + valueStyle.Render(m.status.Version) + "\n\n")
+	b.WriteString(stats)
+	b.WriteString("\n\n")
+	b.WriteString(labelStyle.Width(labelWidth).Render("version"))
+	b.WriteString(valueStyle.Render(m.status.Version))
+	b.WriteString("\n\n")
 
-	b.WriteString(labelStyle.Render("watched paths") + "\n")
+	b.WriteString(labelStyle.Render("watched paths"))
+	b.WriteByte('\n')
 	if len(m.status.WatchPaths) == 0 {
-		b.WriteString(dimStyle.Render("no watched paths configured") + "\n")
+		b.WriteString(dimStyle.Render("no watched paths configured"))
+		b.WriteByte('\n')
 	}
 	for _, p := range m.status.WatchPaths {
-		b.WriteString(dimStyle.Render("• "+p) + "\n")
+		b.WriteString(dimStyle.Render("• " + p))
+		b.WriteByte('\n')
 	}
 	return b.String()
 }
