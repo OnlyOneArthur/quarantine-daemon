@@ -21,8 +21,8 @@ func (m *Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.handleWatchKey(msg)
 	}
 	if m.pane == paneVault {
-		if cmd, handled := m.handleVaultKey(msg); handled {
-			return m, cmd
+		if m.handleVaultKey(msg) {
+			return m, nil
 		}
 	}
 	return m, m.handleActionKey(msg)
@@ -85,28 +85,28 @@ func (m *Model) handleWatchKey(msg tea.KeyMsg) tea.Cmd {
 	return nil
 }
 
-func (m *Model) handleVaultKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+func (m *Model) handleVaultKey(msg tea.KeyMsg) bool {
 	switch {
 	case key.Matches(msg, keys.Up):
 		m.moveCursor(-1)
-		return nil, true
+		return true
 	case key.Matches(msg, keys.Down):
 		m.moveCursor(1)
-		return nil, true
+		return true
 	case key.Matches(msg, keys.Top):
 		m.moveCursor(-len(m.items))
-		return nil, true
+		return true
 	case key.Matches(msg, keys.Bottom):
 		m.moveCursor(len(m.items))
-		return nil, true
+		return true
 	case key.Matches(msg, keys.PageUp):
 		m.moveCursor(-m.listHeight())
-		return nil, true
+		return true
 	case key.Matches(msg, keys.PageDown):
 		m.moveCursor(m.listHeight())
-		return nil, true
+		return true
 	}
-	return nil, false
+	return false
 }
 
 func (m *Model) handleActionKey(msg tea.KeyMsg) tea.Cmd {

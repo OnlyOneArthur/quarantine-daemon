@@ -1,3 +1,4 @@
+// Package tui provides the terminal user interface for the quarantine daemon.
 package tui
 
 import (

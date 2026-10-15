@@ -2,6 +2,7 @@ package quarantine
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -121,6 +122,7 @@ func writePKGBUILDStub(path string) error {
 // rollbackArtifact moves a vault artifact back to dest after a post-move failure,
 // restoring the original permission bits so the file is left as it was found.
 func rollbackArtifact(artifactPath, dest string, mode os.FileMode) error {
-	os.Chmod(artifactPath, mode.Perm())
-	return os.Rename(artifactPath, dest)
+	chmodErr := os.Chmod(artifactPath, mode.Perm())
+	renameErr := os.Rename(artifactPath, dest)
+	return errors.Join(chmodErr, renameErr)
 }

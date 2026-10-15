@@ -1,3 +1,4 @@
+// Package binary implements static binary analysis and format detection for executable payloads.
 package binary
 
 import (
