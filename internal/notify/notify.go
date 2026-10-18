@@ -4,6 +4,7 @@ package notify
 
 import (
 	"context"
+	_ "embed"
 	"fmt"
 	"log/slog"
 	"os"
@@ -13,6 +14,12 @@ import (
 	"sync"
 	"time"
 )
+
+//go:embed assets/eye-normal.png
+var eyeNormalPNG []byte
+
+//go:embed assets/eye-danger.png
+var eyeDangerPNG []byte
 
 // Urgency levels for desktop notifications.
 const (
@@ -61,12 +68,14 @@ func defaultRunner(ctx context.Context, name string, args ...string) error {
 
 // DesktopNotifier sends notifications via notify-send or busctl.
 type DesktopNotifier struct {
-	cfg        Config
-	logger     *slog.Logger
-	runCmd     runner
-	lookPath   func(string) (string, error)
-	mu         sync.Mutex
-	recentSend map[string]time.Time
+	cfg            Config
+	logger         *slog.Logger
+	runCmd         runner
+	lookPath       func(string) (string, error)
+	iconNormalPath string
+	iconDangerPath string
+	mu             sync.Mutex
+	recentSend     map[string]time.Time
 }
 
 // New creates a new DesktopNotifier.
@@ -74,12 +83,40 @@ func New(cfg Config, logger *slog.Logger) *DesktopNotifier {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &DesktopNotifier{
+	d := &DesktopNotifier{
 		cfg:        cfg,
 		logger:     logger,
 		runCmd:     defaultRunner,
 		lookPath:   exec.LookPath,
 		recentSend: make(map[string]time.Time),
+	}
+	d.initIcons()
+	return d
+}
+
+func (d *DesktopNotifier) initIcons() {
+	cacheDir, err := os.UserCacheDir()
+	if err != nil || cacheDir == "" {
+		cacheDir = os.TempDir()
+	}
+	dir := filepath.Join(cacheDir, "quarantined", "icons")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		d.logger.Debug("unable to create icon directory", "error", err)
+		return
+	}
+
+	normalPath := filepath.Clean(filepath.Join(dir, "eye-normal.png"))
+	dangerPath := filepath.Clean(filepath.Join(dir, "eye-danger.png"))
+
+	if len(eyeNormalPNG) > 0 {
+		if err := os.WriteFile(normalPath, eyeNormalPNG, 0644); err == nil {
+			d.iconNormalPath = normalPath
+		}
+	}
+	if len(eyeDangerPNG) > 0 {
+		if err := os.WriteFile(dangerPath, eyeDangerPNG, 0644); err == nil {
+			d.iconDangerPath = dangerPath
+		}
 	}
 }
 
@@ -103,11 +140,16 @@ func (d *DesktopNotifier) NotifyQuarantine(ctx context.Context, path string, sco
 
 	body := fmt.Sprintf("Threat Score: %d/100\nPath: %s%s", score, path, triggerSummary)
 
+	icon := d.iconDangerPath
+	if icon == "" {
+		icon = "security-high"
+	}
+
 	return d.Send(ctx, Notification{
 		Title:    title,
 		Body:     body,
 		Urgency:  UrgencyCritical,
-		Icon:     "security-high",
+		Icon:     icon,
 		Category: "security.quarantine",
 	})
 }
@@ -129,11 +171,16 @@ func (d *DesktopNotifier) NotifyAlert(ctx context.Context, path string, score in
 
 	body := fmt.Sprintf("Threat Score: %d/100\nPath: %s%s", score, path, triggerSummary)
 
+	icon := d.iconNormalPath
+	if icon == "" {
+		icon = "dialog-warning"
+	}
+
 	return d.Send(ctx, Notification{
 		Title:    title,
 		Body:     body,
 		Urgency:  UrgencyNormal,
-		Icon:     "dialog-warning",
+		Icon:     icon,
 		Category: "security.alert",
 	})
 }

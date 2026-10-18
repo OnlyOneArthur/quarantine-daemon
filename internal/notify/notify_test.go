@@ -74,6 +74,7 @@ func TestNotifySendExecution(t *testing.T) {
 	foundApp := false
 	foundUrgency := false
 	foundTitle := false
+	foundDangerIcon := false
 	for i, arg := range invokedArgs {
 		if arg == "-a" && i+1 < len(invokedArgs) && invokedArgs[i+1] == "quarantined" {
 			foundApp = true
@@ -81,12 +82,15 @@ func TestNotifySendExecution(t *testing.T) {
 		if arg == "-u" && i+1 < len(invokedArgs) && invokedArgs[i+1] == "critical" {
 			foundUrgency = true
 		}
+		if arg == "-i" && i+1 < len(invokedArgs) && strings.Contains(invokedArgs[i+1], "eye-danger.png") {
+			foundDangerIcon = true
+		}
 		if strings.Contains(arg, "malware.exe") {
 			foundTitle = true
 		}
 	}
 
-	if !foundApp || !foundUrgency || !foundTitle {
+	if !foundApp || !foundUrgency || !foundTitle || !foundDangerIcon {
 		t.Errorf("args missing required fields: %v", invokedArgs)
 	}
 }
@@ -121,8 +125,12 @@ func TestBusctlFallback(t *testing.T) {
 	if invokedCmd != "busctl" {
 		t.Errorf("expected busctl, got %s", invokedCmd)
 	}
-	if len(invokedArgs) < 5 || invokedArgs[0] != "--user" || invokedArgs[1] != "call" {
+	if len(invokedArgs) < 9 || invokedArgs[0] != "--user" || invokedArgs[1] != "call" {
 		t.Errorf("unexpected busctl args: %v", invokedArgs)
+	}
+	// Check that the normal eye icon was passed to busctl (argument index 8 in busctl call)
+	if !strings.Contains(invokedArgs[9], "eye-normal.png") {
+		t.Errorf("expected eye-normal.png in busctl args[9], got %q", invokedArgs[9])
 	}
 }
 
