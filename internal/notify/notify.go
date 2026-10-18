@@ -10,10 +10,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
+
+// DefaultExpireTimeoutMs is the default notification auto-dismiss delay (10 seconds).
+const DefaultExpireTimeoutMs = 10000
 
 //go:embed assets/eye-normal.png
 var eyeNormalPNG []byte
@@ -30,11 +35,12 @@ const (
 
 // Notification represents a desktop notification payload.
 type Notification struct {
-	Title    string
-	Body     string
-	Urgency  string
-	Icon     string
-	Category string
+	Title           string
+	Body            string
+	Urgency         string
+	Icon            string
+	Category        string
+	ExpireTimeoutMs int
 }
 
 // Config controls notification behavior.
@@ -60,6 +66,10 @@ func defaultRunner(ctx context.Context, name string, args ...string) error {
 		cmd = exec.CommandContext(ctx, "notify-send", args...)
 	case "busctl":
 		cmd = exec.CommandContext(ctx, "busctl", args...)
+	case "osascript":
+		cmd = exec.CommandContext(ctx, "osascript", args...)
+	case "powershell":
+		cmd = exec.CommandContext(ctx, "powershell", args...)
 	default:
 		return fmt.Errorf("unsupported notification command: %s", name)
 	}
@@ -146,11 +156,12 @@ func (d *DesktopNotifier) NotifyQuarantine(ctx context.Context, path string, sco
 	}
 
 	return d.Send(ctx, Notification{
-		Title:    title,
-		Body:     body,
-		Urgency:  UrgencyCritical,
-		Icon:     icon,
-		Category: "security.quarantine",
+		Title:           title,
+		Body:            body,
+		Urgency:         UrgencyCritical,
+		Icon:            icon,
+		Category:        "security.quarantine",
+		ExpireTimeoutMs: DefaultExpireTimeoutMs,
 	})
 }
 
@@ -177,11 +188,12 @@ func (d *DesktopNotifier) NotifyAlert(ctx context.Context, path string, score in
 	}
 
 	return d.Send(ctx, Notification{
-		Title:    title,
-		Body:     body,
-		Urgency:  UrgencyNormal,
-		Icon:     icon,
-		Category: "security.alert",
+		Title:           title,
+		Body:            body,
+		Urgency:         UrgencyNormal,
+		Icon:            icon,
+		Category:        "security.alert",
+		ExpireTimeoutMs: DefaultExpireTimeoutMs,
 	})
 }
 
@@ -208,20 +220,54 @@ func (d *DesktopNotifier) Send(ctx context.Context, n Notification) error {
 	}
 	d.mu.Unlock()
 
-	// Ensure desktop session is available
-	if os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" && os.Getenv("DBUS_SESSION_BUS_ADDRESS") == "" {
-		d.logger.Debug("desktop environment not detected; skipping notification", "title", n.Title)
-		return nil
+	// Ensure desktop session is available on Linux/Unix
+	if runtime.GOOS != "darwin" && runtime.GOOS != "windows" {
+		if os.Getenv("DISPLAY") == "" && os.Getenv("WAYLAND_DISPLAY") == "" && os.Getenv("DBUS_SESSION_BUS_ADDRESS") == "" {
+			d.logger.Debug("desktop environment not detected; skipping notification", "title", n.Title)
+			return nil
+		}
+	}
+
+	expireMs := n.ExpireTimeoutMs
+	if expireMs <= 0 {
+		expireMs = DefaultExpireTimeoutMs
 	}
 
 	// Bound timeout to prevent hanging the pipeline
 	sendCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
+	// macOS dispatch via native osascript
+	if runtime.GOOS == "darwin" {
+		if _, err := d.lookPath("osascript"); err == nil {
+			script := fmt.Sprintf(`display notification %q with title %q`, n.Body, n.Title)
+			if err := d.runCmd(sendCtx, "osascript", "-e", script); err != nil {
+				d.logger.Debug("osascript notification failed", "error", err)
+				return err
+			}
+			return nil
+		}
+	}
+
+	// Windows dispatch via PowerShell toast / balloon
+	if runtime.GOOS == "windows" {
+		if _, err := d.lookPath("powershell"); err == nil {
+			safeTitle := strings.ReplaceAll(n.Title, "'", "''")
+			safeBody := strings.ReplaceAll(n.Body, "'", "''")
+			psCmd := fmt.Sprintf(`[void] [System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); $obj=New-Object System.Windows.Forms.NotifyIcon; $obj.Icon=[System.Drawing.SystemIcons]::Warning; $obj.BalloonTipIcon='Warning'; $obj.BalloonTipTitle='%s'; $obj.BalloonTipText='%s'; $obj.Visible=$True; $obj.ShowBalloonTip(%d)`, safeTitle, safeBody, expireMs)
+			if err := d.runCmd(sendCtx, "powershell", "-NoProfile", "-NonInteractive", "-Command", psCmd); err != nil {
+				d.logger.Debug("powershell notification failed", "error", err)
+				return err
+			}
+			return nil
+		}
+	}
+
 	if _, err := d.lookPath("notify-send"); err == nil {
 		args := []string{
 			"-a", "quarantined",
 			"-u", n.Urgency,
+			"-t", strconv.Itoa(expireMs),
 			"-i", n.Icon,
 		}
 		if n.Category != "" {
@@ -251,7 +297,7 @@ func (d *DesktopNotifier) Send(ctx context.Context, n Notification) error {
 			"0",
 			"0",
 			"--",
-			"-1",
+			strconv.Itoa(expireMs),
 		}
 		if err := d.runCmd(sendCtx, "busctl", args...); err != nil {
 			d.logger.Debug("busctl notify failed", "error", err)

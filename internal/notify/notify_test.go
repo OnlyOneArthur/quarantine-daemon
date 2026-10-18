@@ -75,12 +75,16 @@ func TestNotifySendExecution(t *testing.T) {
 	foundUrgency := false
 	foundTitle := false
 	foundDangerIcon := false
+	foundTimeout := false
 	for i, arg := range invokedArgs {
 		if arg == "-a" && i+1 < len(invokedArgs) && invokedArgs[i+1] == "quarantined" {
 			foundApp = true
 		}
 		if arg == "-u" && i+1 < len(invokedArgs) && invokedArgs[i+1] == "critical" {
 			foundUrgency = true
+		}
+		if arg == "-t" && i+1 < len(invokedArgs) && invokedArgs[i+1] == "10000" {
+			foundTimeout = true
 		}
 		if arg == "-i" && i+1 < len(invokedArgs) && strings.Contains(invokedArgs[i+1], "eye-danger.png") {
 			foundDangerIcon = true
@@ -90,7 +94,7 @@ func TestNotifySendExecution(t *testing.T) {
 		}
 	}
 
-	if !foundApp || !foundUrgency || !foundTitle || !foundDangerIcon {
+	if !foundApp || !foundUrgency || !foundTitle || !foundDangerIcon || !foundTimeout {
 		t.Errorf("args missing required fields: %v", invokedArgs)
 	}
 }
@@ -125,12 +129,16 @@ func TestBusctlFallback(t *testing.T) {
 	if invokedCmd != "busctl" {
 		t.Errorf("expected busctl, got %s", invokedCmd)
 	}
-	if len(invokedArgs) < 9 || invokedArgs[0] != "--user" || invokedArgs[1] != "call" {
+	if len(invokedArgs) < 16 || invokedArgs[0] != "--user" || invokedArgs[1] != "call" {
 		t.Errorf("unexpected busctl args: %v", invokedArgs)
 	}
-	// Check that the normal eye icon was passed to busctl (argument index 8 in busctl call)
+	// Check that the normal eye icon was passed to busctl (argument index 9 in busctl call)
 	if !strings.Contains(invokedArgs[9], "eye-normal.png") {
 		t.Errorf("expected eye-normal.png in busctl args[9], got %q", invokedArgs[9])
+	}
+	// Check that the expire timeout is 10000 ms (argument index 15)
+	if invokedArgs[15] != "10000" {
+		t.Errorf("expected busctl expire timeout 10000 ms, got %q", invokedArgs[15])
 	}
 }
 
@@ -177,5 +185,39 @@ func TestNoDesktopEnvironment(t *testing.T) {
 	}
 	if called {
 		t.Error("expected no notification without desktop environment")
+	}
+}
+
+func TestCustomExpireTimeout(t *testing.T) {
+	t.Setenv("WAYLAND_DISPLAY", "wayland-0")
+
+	var invokedArgs []string
+	n := New(Config{Enabled: true, MinScore: 50}, nil)
+	n.lookPath = func(name string) (string, error) {
+		return "/usr/bin/notify-send", nil
+	}
+	n.runCmd = func(ctx context.Context, name string, args ...string) error {
+		invokedArgs = args
+		return nil
+	}
+
+	err := n.Send(context.Background(), Notification{
+		Title:           "Custom Timeout",
+		Body:            "Test body",
+		Urgency:         UrgencyNormal,
+		ExpireTimeoutMs: 5000,
+	})
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+
+	foundTimeout := false
+	for i, arg := range invokedArgs {
+		if arg == "-t" && i+1 < len(invokedArgs) && invokedArgs[i+1] == "5000" {
+			foundTimeout = true
+		}
+	}
+	if !foundTimeout {
+		t.Errorf("expected -t 5000 in args, got %v", invokedArgs)
 	}
 }
