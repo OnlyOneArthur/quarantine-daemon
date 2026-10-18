@@ -12,9 +12,9 @@ import (
 func TestNotifyDisabled(t *testing.T) {
 	called := false
 	n := New(Config{Enabled: false, MinScore: 50}, nil)
-	n.runCmd = func(ctx context.Context, name string, args ...string) error {
+	n.runCmd = func(ctx context.Context, name string, args ...string) (string, error) {
 		called = true
-		return nil
+		return "", nil
 	}
 
 	err := n.NotifyQuarantine(context.Background(), "/tmp/bad.elf", 100, []string{"evasion"})
@@ -29,9 +29,9 @@ func TestNotifyDisabled(t *testing.T) {
 func TestNotifyScoreBelowThreshold(t *testing.T) {
 	called := false
 	n := New(Config{Enabled: true, MinScore: 80}, nil)
-	n.runCmd = func(ctx context.Context, name string, args ...string) error {
+	n.runCmd = func(ctx context.Context, name string, args ...string) (string, error) {
 		called = true
-		return nil
+		return "", nil
 	}
 
 	err := n.NotifyAlert(context.Background(), "/tmp/alert.elf", 50, []string{"high_entropy"})
@@ -56,10 +56,10 @@ func TestNotifySendExecution(t *testing.T) {
 		}
 		return "", errors.New("not found")
 	}
-	n.runCmd = func(ctx context.Context, name string, args ...string) error {
+	n.runCmd = func(ctx context.Context, name string, args ...string) (string, error) {
 		invokedCmd = name
 		invokedArgs = args
-		return nil
+		return "101\n", nil
 	}
 
 	err := n.NotifyQuarantine(context.Background(), "/tmp/malware.exe", 95, []string{"pe_upx_packed", "entropy_high"})
@@ -76,7 +76,11 @@ func TestNotifySendExecution(t *testing.T) {
 	foundTitle := false
 	foundDangerIcon := false
 	foundTimeout := false
+	foundPrintID := false
 	for i, arg := range invokedArgs {
+		if arg == "-p" {
+			foundPrintID = true
+		}
 		if arg == "-a" && i+1 < len(invokedArgs) && invokedArgs[i+1] == "quarantined" {
 			foundApp = true
 		}
@@ -94,7 +98,7 @@ func TestNotifySendExecution(t *testing.T) {
 		}
 	}
 
-	if !foundApp || !foundUrgency || !foundTitle || !foundDangerIcon || !foundTimeout {
+	if !foundApp || !foundUrgency || !foundTitle || !foundDangerIcon || !foundTimeout || !foundPrintID {
 		t.Errorf("args missing required fields: %v", invokedArgs)
 	}
 }
@@ -115,10 +119,10 @@ func TestBusctlFallback(t *testing.T) {
 		}
 		return "", errors.New("not found")
 	}
-	n.runCmd = func(ctx context.Context, name string, args ...string) error {
+	n.runCmd = func(ctx context.Context, name string, args ...string) (string, error) {
 		invokedCmd = name
 		invokedArgs = args
-		return nil
+		return "u 102\n", nil
 	}
 
 	err := n.NotifyAlert(context.Background(), "/tmp/test.sh", 60, []string{"curl_pipe_sh"})
@@ -150,9 +154,9 @@ func TestDeduplication(t *testing.T) {
 	n.lookPath = func(name string) (string, error) {
 		return "/usr/bin/notify-send", nil
 	}
-	n.runCmd = func(ctx context.Context, name string, args ...string) error {
+	n.runCmd = func(ctx context.Context, name string, args ...string) (string, error) {
 		callCount++
-		return nil
+		return "103\n", nil
 	}
 
 	for i := 0; i < 5; i++ {
@@ -174,9 +178,9 @@ func TestNoDesktopEnvironment(t *testing.T) {
 	n.lookPath = func(name string) (string, error) {
 		return "/usr/bin/notify-send", nil
 	}
-	n.runCmd = func(ctx context.Context, name string, args ...string) error {
+	n.runCmd = func(ctx context.Context, name string, args ...string) (string, error) {
 		called = true
-		return nil
+		return "", nil
 	}
 
 	err := n.NotifyQuarantine(context.Background(), "/tmp/test.exe", 100, nil)
@@ -196,9 +200,9 @@ func TestCustomExpireTimeout(t *testing.T) {
 	n.lookPath = func(name string) (string, error) {
 		return "/usr/bin/notify-send", nil
 	}
-	n.runCmd = func(ctx context.Context, name string, args ...string) error {
+	n.runCmd = func(ctx context.Context, name string, args ...string) (string, error) {
 		invokedArgs = args
-		return nil
+		return "104\n", nil
 	}
 
 	err := n.Send(context.Background(), Notification{

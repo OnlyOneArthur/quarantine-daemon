@@ -57,9 +57,9 @@ type Notifier interface {
 }
 
 // runner is an abstraction over command execution for testing.
-type runner func(ctx context.Context, name string, args ...string) error
+type runner func(ctx context.Context, name string, args ...string) (string, error)
 
-func defaultRunner(ctx context.Context, name string, args ...string) error {
+func defaultRunner(ctx context.Context, name string, args ...string) (string, error) {
 	var cmd *exec.Cmd
 	switch name {
 	case "notify-send":
@@ -71,9 +71,10 @@ func defaultRunner(ctx context.Context, name string, args ...string) error {
 	case "powershell":
 		cmd = exec.CommandContext(ctx, "powershell", args...)
 	default:
-		return fmt.Errorf("unsupported notification command: %s", name)
+		return "", fmt.Errorf("unsupported notification command: %s", name)
 	}
-	return cmd.Run()
+	out, err := cmd.CombinedOutput()
+	return string(out), err
 }
 
 // DesktopNotifier sends notifications via notify-send or busctl.
@@ -102,6 +103,20 @@ func New(cfg Config, logger *slog.Logger) *DesktopNotifier {
 	}
 	d.initIcons()
 	return d
+}
+
+func (d *DesktopNotifier) scheduleDismissal(id uint32, delay time.Duration) {
+	time.AfterFunc(delay, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if _, err := d.lookPath("busctl"); err == nil {
+			_, _ = d.runCmd(ctx, "busctl", "--user", "call",
+				"org.freedesktop.Notifications",
+				"/org/freedesktop/Notifications",
+				"org.freedesktop.Notifications",
+				"CloseNotification", "u", strconv.FormatUint(uint64(id), 10))
+		}
+	})
 }
 
 func (d *DesktopNotifier) initIcons() {
@@ -241,7 +256,7 @@ func (d *DesktopNotifier) Send(ctx context.Context, n Notification) error {
 	if runtime.GOOS == "darwin" {
 		if _, err := d.lookPath("osascript"); err == nil {
 			script := fmt.Sprintf(`display notification %q with title %q`, n.Body, n.Title)
-			if err := d.runCmd(sendCtx, "osascript", "-e", script); err != nil {
+			if _, err := d.runCmd(sendCtx, "osascript", "-e", script); err != nil {
 				d.logger.Debug("osascript notification failed", "error", err)
 				return err
 			}
@@ -255,7 +270,7 @@ func (d *DesktopNotifier) Send(ctx context.Context, n Notification) error {
 			safeTitle := strings.ReplaceAll(n.Title, "'", "''")
 			safeBody := strings.ReplaceAll(n.Body, "'", "''")
 			psCmd := fmt.Sprintf(`[void] [System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms'); $obj=New-Object System.Windows.Forms.NotifyIcon; $obj.Icon=[System.Drawing.SystemIcons]::Warning; $obj.BalloonTipIcon='Warning'; $obj.BalloonTipTitle='%s'; $obj.BalloonTipText='%s'; $obj.Visible=$True; $obj.ShowBalloonTip(%d)`, safeTitle, safeBody, expireMs)
-			if err := d.runCmd(sendCtx, "powershell", "-NoProfile", "-NonInteractive", "-Command", psCmd); err != nil {
+			if _, err := d.runCmd(sendCtx, "powershell", "-NoProfile", "-NonInteractive", "-Command", psCmd); err != nil {
 				d.logger.Debug("powershell notification failed", "error", err)
 				return err
 			}
@@ -265,6 +280,7 @@ func (d *DesktopNotifier) Send(ctx context.Context, n Notification) error {
 
 	if _, err := d.lookPath("notify-send"); err == nil {
 		args := []string{
+			"-p",
 			"-a", "quarantined",
 			"-u", n.Urgency,
 			"-t", strconv.Itoa(expireMs),
@@ -274,9 +290,13 @@ func (d *DesktopNotifier) Send(ctx context.Context, n Notification) error {
 			args = append(args, "-c", n.Category)
 		}
 		args = append(args, n.Title, n.Body)
-		if err := d.runCmd(sendCtx, "notify-send", args...); err != nil {
+		out, err := d.runCmd(sendCtx, "notify-send", args...)
+		if err != nil {
 			d.logger.Debug("notify-send failed", "error", err)
 			return err
+		}
+		if id, parseErr := strconv.ParseUint(strings.TrimSpace(out), 10, 32); parseErr == nil && id > 0 {
+			d.scheduleDismissal(uint32(id), time.Duration(expireMs)*time.Millisecond)
 		}
 		return nil
 	}
@@ -299,9 +319,16 @@ func (d *DesktopNotifier) Send(ctx context.Context, n Notification) error {
 			"--",
 			strconv.Itoa(expireMs),
 		}
-		if err := d.runCmd(sendCtx, "busctl", args...); err != nil {
+		out, err := d.runCmd(sendCtx, "busctl", args...)
+		if err != nil {
 			d.logger.Debug("busctl notify failed", "error", err)
 			return err
+		}
+		fields := strings.Fields(out)
+		if len(fields) >= 2 && fields[0] == "u" {
+			if id, parseErr := strconv.ParseUint(fields[1], 10, 32); parseErr == nil && id > 0 {
+				d.scheduleDismissal(uint32(id), time.Duration(expireMs)*time.Millisecond)
+			}
 		}
 		return nil
 	}
