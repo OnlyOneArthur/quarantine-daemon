@@ -1,3 +1,4 @@
+// Package main implements tests for the quarantinctl command-line interface.
 package main
 
 import (

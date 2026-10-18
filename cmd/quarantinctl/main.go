@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -43,15 +44,22 @@ Global Options:
 }
 
 func main() {
-	if len(os.Args) < 2 {
+	if err := run(os.Args[1:]); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run(cliArgs []string) error {
+	if len(cliArgs) == 0 {
 		usage()
-		os.Exit(0)
+		return nil
 	}
 
-	for _, arg := range os.Args[1:] {
+	for _, arg := range cliArgs {
 		if arg == "-h" || arg == "--help" || arg == "help" {
 			usage()
-			os.Exit(0)
+			return nil
 		}
 	}
 
@@ -63,14 +71,14 @@ func main() {
 	jsonOutput := globalFlags.Bool("json", false, "output in JSON format")
 
 	// Parse global flags until first non-flag arg
-	if err := globalFlags.Parse(os.Args[1:]); err != nil {
-		os.Exit(1)
+	if err := globalFlags.Parse(cliArgs); err != nil {
+		return err
 	}
 
 	args := globalFlags.Args()
 	if len(args) == 0 {
 		usage()
-		os.Exit(0)
+		return nil
 	}
 
 	cmd := args[0]
@@ -78,49 +86,44 @@ func main() {
 
 	if cmd == "version" || cmd == "--version" || cmd == "-v" {
 		fmt.Printf("quarantinctl %s\n", Version)
-		return
+		return nil
 	}
 	if cmd == "help" || cmd == "--help" || cmd == "-h" {
 		usage()
-		return
+		return nil
 	}
 
 	resolvedSocket := resolveSocket(*socketPath, *configPath)
 
 	if cmd == "tui" {
 		if err := tui.Run(tui.SocketDialer(resolvedSocket), Version); err != nil {
-			fmt.Fprintf(os.Stderr, "tui failed: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("tui failed: %w", err)
 		}
-		return
+		return nil
 	}
 
 	client, err := ipc.NewClient(resolvedSocket)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "failed to connect to daemon at %s: %v\n", resolvedSocket, err)
-		os.Exit(1)
+		return fmt.Errorf("failed to connect to daemon at %s: %w", resolvedSocket, err)
 	}
 	defer func() { _ = client.Close() }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	var cmdErr error
 	switch cmd {
 	case "status":
-		cmdErr = handleStatus(ctx, client, *jsonOutput)
+		return handleStatus(ctx, client, *jsonOutput)
 	case "list":
-		cmdErr = handleList(ctx, client, *jsonOutput)
+		return handleList(ctx, client, *jsonOutput)
 	case "inspect":
 		if len(cmdArgs) < 1 {
-			fmt.Fprintln(os.Stderr, "error: inspect requires an item <id>")
-			os.Exit(1)
+			return errors.New("inspect requires an item <id>")
 		}
-		cmdErr = handleInspect(ctx, client, cmdArgs[0], *jsonOutput)
+		return handleInspect(ctx, client, cmdArgs[0], *jsonOutput)
 	case "restore":
 		if len(cmdArgs) < 1 {
-			fmt.Fprintln(os.Stderr, "error: restore requires an item <id> [--to <dest>]")
-			os.Exit(1)
+			return errors.New("restore requires an item <id> [--to <dest>]")
 		}
 		dest := ""
 		for i := 1; i < len(cmdArgs); i++ {
@@ -129,27 +132,19 @@ func main() {
 				break
 			}
 		}
-		cmdErr = handleRestore(ctx, client, cmdArgs[0], dest)
+		return handleRestore(ctx, client, cmdArgs[0], dest)
 	case "purge":
 		if len(cmdArgs) < 1 {
-			fmt.Fprintln(os.Stderr, "error: purge requires an item <id>")
-			os.Exit(1)
+			return errors.New("purge requires an item <id>")
 		}
-		cmdErr = handlePurge(ctx, client, cmdArgs[0])
+		return handlePurge(ctx, client, cmdArgs[0])
 	case "watch":
 		if len(cmdArgs) < 2 || cmdArgs[0] != "add" {
-			fmt.Fprintln(os.Stderr, "usage: quarantinctl watch add <path>")
-			os.Exit(1)
+			return errors.New("usage: quarantinctl watch add <path>")
 		}
-		cmdErr = handleWatchAdd(ctx, client, cmdArgs[1])
+		return handleWatchAdd(ctx, client, cmdArgs[1])
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command: %q (run 'quarantinctl --help' for usage)\n", cmd)
-		os.Exit(1)
-	}
-
-	if cmdErr != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", cmdErr)
-		os.Exit(1)
+		return fmt.Errorf("unknown command: %q (run 'quarantinctl --help' for usage)", cmd)
 	}
 }
 

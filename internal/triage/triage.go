@@ -1,3 +1,5 @@
+// Package triage defines common verdict contracts, scan results, and scanner interfaces
+// used across static analysis pipelines in the quarantine system.
 package triage
 
 import "context"
