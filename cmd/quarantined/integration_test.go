@@ -81,7 +81,7 @@ func TestEndToEndPipelineIntegration(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = w.Close() })
 
-	p := newPipeline(cfg, v, discardLogger())
+	p := newPipeline(cfg, v, nil, discardLogger())
 	ctrl := newDaemonController(p, w, cfg, Version)
 
 	srv := ipc.NewServer(cfg.Service.SocketPath, v, ctrl)

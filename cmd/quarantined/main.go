@@ -16,6 +16,7 @@ import (
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/ipc"
+	"github.com/OnlyOneArthur/quarantine-daemon/internal/notify"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/quarantine"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/tui"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/watcher"
@@ -104,7 +105,11 @@ func run(cfg *config.Config, log *slog.Logger) error {
 		return err
 	}
 
-	p := newPipeline(cfg, vault, log)
+	notifier := notify.New(notify.Config{
+		Enabled:  cfg.Notifications.Enabled,
+		MinScore: cfg.Notifications.MinScore,
+	}, log)
+	p := newPipeline(cfg, vault, notifier, log)
 	ctrl := newDaemonController(p, w, cfg, Version)
 	srv, srvErr := startIPC(ctx, cfg, vault, ctrl)
 

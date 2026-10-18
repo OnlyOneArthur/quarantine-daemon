@@ -12,11 +12,12 @@ import (
 
 // Config is the root configuration document.
 type Config struct {
-	Service    ServiceConfig    `toml:"service"`
-	Paths      PathsConfig      `toml:"paths"`
-	Binary     BinaryConfig     `toml:"triage_binary"`
-	PKGBUILD   PKGBUILDConfig   `toml:"triage_pkgbuild"`
-	Quarantine QuarantineConfig `toml:"quarantine"`
+	Service       ServiceConfig      `toml:"service"`
+	Paths         PathsConfig        `toml:"paths"`
+	Binary        BinaryConfig       `toml:"triage_binary"`
+	PKGBUILD      PKGBUILDConfig     `toml:"triage_pkgbuild"`
+	Quarantine    QuarantineConfig   `toml:"quarantine"`
+	Notifications NotificationConfig `toml:"notifications"`
 }
 
 // ServiceConfig controls logging and the IPC socket.
@@ -52,6 +53,12 @@ type QuarantineConfig struct {
 	ThresholdScore int    `toml:"threshold_score"`
 	MaxVaultSizeMB int64  `toml:"max_vault_size_mb"`
 	RetentionDays  int    `toml:"retention_days"`
+}
+
+// NotificationConfig controls desktop notifications.
+type NotificationConfig struct {
+	Enabled  bool `toml:"enabled"`
+	MinScore int  `toml:"min_score"`
 }
 
 // ExpandHome replaces leading "~/" with the user's home directory.
@@ -112,6 +119,10 @@ func DefaultConfig() *Config {
 			ThresholdScore: 85,
 			MaxVaultSizeMB: 1024,
 			RetentionDays:  14,
+		},
+		Notifications: NotificationConfig{
+			Enabled:  true,
+			MinScore: 50,
 		},
 	}
 }
@@ -188,6 +199,9 @@ func (c *Config) validate() error {
 	}
 	if c.Binary.EntropyThreshold < 0 || c.Binary.EntropyThreshold > 8 {
 		return fmt.Errorf("triage_binary.entropy_threshold must be between 0 and 8, got %g", c.Binary.EntropyThreshold)
+	}
+	if c.Notifications.MinScore < 0 || c.Notifications.MinScore > 100 {
+		return fmt.Errorf("notifications.min_score must be between 0 and 100, got %d", c.Notifications.MinScore)
 	}
 	return nil
 }

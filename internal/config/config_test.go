@@ -69,6 +69,8 @@ func TestLoadConfig_RejectsOutOfRangeValues(t *testing.T) {
 		{"zero poll interval", "[service]\npoll_interval_ms = 0\n"},
 		{"zero scan size", "[triage_binary]\nmax_scan_size_mb = 0\n"},
 		{"entropy above 8", "[triage_binary]\nentropy_threshold = 9.5\n"},
+		{"notification min_score above 100", "[notifications]\nmin_score = 101\n"},
+		{"negative notification min_score", "[notifications]\nmin_score = -1\n"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

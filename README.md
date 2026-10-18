@@ -65,6 +65,9 @@ Quarantine vault  ->  IPC server (Unix socket, SO_PEERCRED)  ->  TUI client
   deny-all DACL (Windows), plus a `<sha256>.meta.json` sidecar recording SHA-256, original path,
   original mode, uid/gid and triggering signals. `PKGBUILD` artifacts are additionally replaced
   in place by a stub that exits non-zero, so `makepkg` cannot proceed.
+- **Desktop notifications** (`internal/notify`) — FreeDesktop desktop notification popups
+  via `notify-send` or D-Bus (`busctl`). Critical alerts on file quarantine, warning popups on threat
+  alerts, with 3-second deduplication and non-blocking asynchronous dispatch.
 - **IPC** (`internal/ipc`) — newline-delimited JSON RPC over
   `$XDG_RUNTIME_DIR/quarantined.sock`, mode `0600`, peer authenticated with Linux `SO_PEERCRED`
   or macOS `LOCAL_PEERCRED` so only the owning UID can connect. Windows peer authentication is not

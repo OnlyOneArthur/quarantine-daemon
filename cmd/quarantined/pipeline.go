@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -13,6 +14,7 @@ import (
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/fsutil"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/ipc"
+	"github.com/OnlyOneArthur/quarantine-daemon/internal/notify"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/quarantine"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/binary"
@@ -34,18 +36,41 @@ type scanResult struct {
 type pipeline struct {
 	cfg         *config.Config
 	vault       *quarantine.Vault
+	notifier    notify.Notifier
 	log         *slog.Logger
 	scanned     atomic.Int64
 	quarantined atomic.Int64
+	inFlightMu  sync.Mutex
+	inFlight    map[string]struct{}
 }
 
-func newPipeline(cfg *config.Config, vault *quarantine.Vault, log *slog.Logger) *pipeline {
-	return &pipeline{cfg: cfg, vault: vault, log: log}
+func newPipeline(cfg *config.Config, vault *quarantine.Vault, notifier notify.Notifier, log *slog.Logger) *pipeline {
+	return &pipeline{
+		cfg:      cfg,
+		vault:    vault,
+		notifier: notifier,
+		log:      log,
+		inFlight: make(map[string]struct{}),
+	}
 }
 
 // handlePath triages one regular file. It returns the vault metadata when the file
 // was quarantined, or nil when the file was skipped or left in place (PASS/ALERT).
 func (p *pipeline) handlePath(path string) (*quarantine.ItemMetadata, error) {
+	p.inFlightMu.Lock()
+	if _, active := p.inFlight[path]; active {
+		p.inFlightMu.Unlock()
+		return nil, nil
+	}
+	p.inFlight[path] = struct{}{}
+	p.inFlightMu.Unlock()
+
+	defer func() {
+		p.inFlightMu.Lock()
+		delete(p.inFlight, path)
+		p.inFlightMu.Unlock()
+	}()
+
 	if p.cfg.Binary.MaxScanSizeMB <= 0 || p.cfg.Binary.MaxScanSizeMB > (1<<63-1)/(1024*1024) {
 		return nil, fmt.Errorf("max_scan_size_mb must be positive and fit in int64")
 	}
@@ -82,6 +107,12 @@ func (p *pipeline) handlePath(path string) (*quarantine.ItemMetadata, error) {
 
 	p.log.Info("triage complete", "path", path, "verdict", res.Verdict, "score", res.Score, "triggers", res.Triggers)
 
+	if res.Verdict == string(triage.VerdictAlert) && p.notifier != nil {
+		go func() {
+			_ = p.notifier.NotifyAlert(context.Background(), path, res.Score, res.Triggers)
+		}()
+	}
+
 	if res.Verdict != string(triage.VerdictQuarantine) || res.Score < p.cfg.Quarantine.ThresholdScore {
 		return nil, nil
 	}
@@ -92,6 +123,12 @@ func (p *pipeline) handlePath(path string) (*quarantine.ItemMetadata, error) {
 	}
 	p.quarantined.Add(1)
 	p.log.Warn("file quarantined", "path", path, "id", meta.ID, "score", meta.Score)
+
+	if p.notifier != nil {
+		go func() {
+			_ = p.notifier.NotifyQuarantine(context.Background(), path, meta.Score, res.Triggers)
+		}()
+	}
 	return meta, nil
 }
 

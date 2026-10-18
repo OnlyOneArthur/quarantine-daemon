@@ -2,14 +2,17 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
+	"github.com/OnlyOneArthur/quarantine-daemon/internal/notify"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/quarantine"
 )
 
@@ -53,7 +56,7 @@ func newTestPipeline(t *testing.T) (*pipeline, *quarantine.Vault, *config.Config
 	}
 	t.Cleanup(func() { _ = vault.Close() })
 
-	return newPipeline(cfg, vault, discardLogger()), vault, cfg, root
+	return newPipeline(cfg, vault, nil, discardLogger()), vault, cfg, root
 }
 
 func writeFixture(t *testing.T, dir, name string, data []byte) string {
@@ -208,5 +211,51 @@ func TestIgnoredKindsSkippedWhenDisabled(t *testing.T) {
 	}
 	if meta != nil {
 		t.Fatalf("PKGBUILD quarantined while triage_pkgbuild disabled: %+v", meta)
+	}
+}
+
+type mockPipelineNotifier struct {
+	quarantineCh chan string
+	alertCh      chan string
+}
+
+func (m *mockPipelineNotifier) NotifyQuarantine(ctx context.Context, path string, score int, triggers []string) error {
+	m.quarantineCh <- path
+	return nil
+}
+
+func (m *mockPipelineNotifier) NotifyAlert(ctx context.Context, path string, score int, triggers []string) error {
+	m.alertCh <- path
+	return nil
+}
+
+func (m *mockPipelineNotifier) Send(ctx context.Context, n notify.Notification) error {
+	return nil
+}
+
+func TestPipelineNotifierCalledOnQuarantine(t *testing.T) {
+	p, _, _, root := newTestPipeline(t)
+	mockNotif := &mockPipelineNotifier{
+		quarantineCh: make(chan string, 1),
+		alertCh:      make(chan string, 1),
+	}
+	p.notifier = mockNotif
+
+	path := writeFixture(t, filepath.Join(root, "watch"), "PKGBUILD", []byte(maliciousPKGBUILD))
+	meta, err := p.handlePath(path)
+	if err != nil {
+		t.Fatalf("handlePath: %v", err)
+	}
+	if meta == nil {
+		t.Fatal("expected file to be quarantined")
+	}
+
+	select {
+	case qPath := <-mockNotif.quarantineCh:
+		if qPath != path {
+			t.Errorf("got quarantine notification for %s, want %s", qPath, path)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for quarantine notification")
 	}
 }

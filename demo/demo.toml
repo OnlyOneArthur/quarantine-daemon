@@ -28,3 +28,7 @@ vault_dir = "vault"
 threshold_score = 85
 max_vault_size_mb = 1024
 retention_days = 14
+
+[notifications]
+enabled = true
+min_score = 50
