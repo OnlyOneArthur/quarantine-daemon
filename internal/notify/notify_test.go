@@ -84,7 +84,7 @@ func TestNotifySendExecution(t *testing.T) {
 		if arg == "-a" && i+1 < len(invokedArgs) && invokedArgs[i+1] == "quarantined" {
 			foundApp = true
 		}
-		if arg == "-u" && i+1 < len(invokedArgs) && invokedArgs[i+1] == "critical" {
+		if arg == "-u" && i+1 < len(invokedArgs) && invokedArgs[i+1] == "normal" {
 			foundUrgency = true
 		}
 		if arg == "-t" && i+1 < len(invokedArgs) && invokedArgs[i+1] == "10000" {

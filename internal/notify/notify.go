@@ -173,7 +173,7 @@ func (d *DesktopNotifier) NotifyQuarantine(ctx context.Context, path string, sco
 	return d.Send(ctx, Notification{
 		Title:           title,
 		Body:            body,
-		Urgency:         UrgencyCritical,
+		Urgency:         UrgencyNormal,
 		Icon:            icon,
 		Category:        "security.quarantine",
 		ExpireTimeoutMs: DefaultExpireTimeoutMs,
