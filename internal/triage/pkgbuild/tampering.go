@@ -1,6 +1,7 @@
 package pkgbuild
 
 import (
+	"path/filepath"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -136,6 +137,17 @@ func checkPathTarget(_ *syntax.Word, rawPath string, line int, scope string, tri
 
 func matchSystemPath(raw string) (matched bool, isCritical bool) {
 	clean := strings.Trim(raw, `'"`)
+	if strings.HasPrefix(clean, "$HOME") {
+		clean = "~" + strings.TrimPrefix(clean, "$HOME")
+	} else if strings.HasPrefix(clean, "${HOME}") {
+		clean = "~" + strings.TrimPrefix(clean, "${HOME}")
+	}
+
+	if strings.HasPrefix(clean, "/") {
+		clean = filepath.Clean(clean)
+	} else if strings.HasPrefix(clean, "~/") {
+		clean = "~/" + filepath.Clean(strings.TrimPrefix(clean, "~/"))
+	}
 
 	criticalExactOrPrefix := []string{
 		"/etc/sudoers",

@@ -4,22 +4,19 @@ import (
 	"sort"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/config"
+	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage"
 )
 
 // Verdict defines the triage action verdict.
-type Verdict string
+type Verdict = triage.Verdict
 
 // Verdict values ordered from least to most severe.
 const (
-	VerdictPass       Verdict = "PASS"
-	VerdictAlert      Verdict = "ALERT"
-	VerdictQuarantine Verdict = "QUARANTINE"
+	VerdictPass         = triage.VerdictPass
+	VerdictAlert        = triage.VerdictAlert
+	VerdictQuarantine   = triage.VerdictQuarantine
+	AlertScoreThreshold = triage.AlertScoreThreshold
 )
-
-// AlertScoreThreshold is the score at or above which a result is reported as an
-// ALERT even when the quarantine threshold is not reached. It is exported so
-// clients (e.g. the TUI) can label scores with the daemon's real boundaries.
-const AlertScoreThreshold = 50
 
 // Risk category identifiers.
 const (

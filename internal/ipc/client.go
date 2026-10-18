@@ -127,6 +127,7 @@ func (c *Client) executeExchange(ctx context.Context, method string, payload []b
 func (c *Client) decodeResponse(line []byte, reqID string, out any) error {
 	var resp Response
 	if err := json.Unmarshal(line, &resp); err != nil {
+		c.drop()
 		return fmt.Errorf("decode response: %w", err)
 	}
 	if resp.ID != reqID {

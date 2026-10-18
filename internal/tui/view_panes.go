@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/quarantine"
-	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/binary"
+	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage"
 )
 
 func (m *Model) renderDashboard() string {
@@ -75,7 +75,7 @@ func vaultColumns(width int) []vaultColumn {
 	}}
 	verdictCol := vaultColumn{title: "VERDICT", width: 12, cell: func(it *quarantine.ItemMetadata, m *Model, _ int) (string, lipgloss.Style) {
 		st := lipgloss.NewStyle().Foreground(m.severityColor(it.Score))
-		if it.Score >= binary.AlertScoreThreshold {
+		if it.Score >= triage.AlertScoreThreshold {
 			st = st.Bold(true)
 		}
 		return m.verdictFor(it.Score), st

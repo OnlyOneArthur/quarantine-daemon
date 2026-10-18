@@ -6,7 +6,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/binary"
+	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage"
 )
 
 func (m *Model) handleTick() (tea.Model, tea.Cmd) {
@@ -157,10 +157,10 @@ func humanBytes(n int64) string {
 func (m *Model) verdictFor(score int) string {
 	switch {
 	case score >= m.quarantineThreshold:
-		return string(binary.VerdictQuarantine)
-	case score >= binary.AlertScoreThreshold:
-		return string(binary.VerdictAlert)
+		return string(triage.VerdictQuarantine)
+	case score >= triage.AlertScoreThreshold:
+		return string(triage.VerdictAlert)
 	default:
-		return string(binary.VerdictPass)
+		return string(triage.VerdictPass)
 	}
 }

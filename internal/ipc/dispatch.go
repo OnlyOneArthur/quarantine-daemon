@@ -21,7 +21,7 @@ func (s *Server) vaultOrError(resp *Response) *quarantine.Vault {
 // decodeItemParams decodes an ItemParams payload, or records INVALID_PARAMS on resp.
 func decodeItemParams(req *Request, resp *Response) (ItemParams, bool) {
 	var p ItemParams
-	if err := json.Unmarshal(req.Params, &p); err != nil || p.ID == "" {
+	if err := json.Unmarshal(req.Params, &p); err != nil || p.ID == "" || strings.ContainsAny(p.ID, "/\\") || strings.Contains(p.ID, "..") {
 		resp.Error = &RPCError{Code: "INVALID_PARAMS", Message: "missing or invalid id parameter"}
 		return p, false
 	}

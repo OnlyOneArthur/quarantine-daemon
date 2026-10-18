@@ -164,6 +164,9 @@ func runEventLoop(ctx context.Context, log *slog.Logger, vault *quarantine.Vault
 	var loopErr error
 	var workers sync.WaitGroup
 
+	const maxPipelineWorkers = 16
+	sem := make(chan struct{}, maxPipelineWorkers)
+
 loop:
 	for {
 		select {
@@ -183,9 +186,15 @@ loop:
 				loopErr = errors.New("watcher event channel closed")
 				break loop
 			}
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				break loop
+			}
 			workers.Add(1)
 			go func(path string) {
 				defer workers.Done()
+				defer func() { <-sem }()
 				if _, err := p.handlePath(path); err != nil {
 					log.Error("pipeline error", "path", path, "error", err)
 				}

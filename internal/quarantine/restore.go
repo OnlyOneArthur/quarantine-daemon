@@ -12,6 +12,9 @@ import (
 
 // Restore safely restores an item to customDestPath, or its OriginalPath when empty.
 func (v *Vault) Restore(id string, customDestPath string) error {
+	if !isHex64(id) {
+		return ErrItemNotFound
+	}
 	return v.withLock(func() error {
 		meta, err := v.readMetaByID(id)
 		if err != nil {
@@ -137,13 +140,22 @@ func publishRestoredFile(stage, dest string, stub os.FileInfo, dst *os.File, met
 		return fmt.Errorf("publish destination: %w", err)
 	}
 
+	cleanupOnErr := func() {
+		if stub == nil {
+			_ = os.Remove(dest)
+		}
+	}
+
 	if err := dst.Chmod(meta.OriginalMode); err != nil {
+		cleanupOnErr()
 		return fmt.Errorf("restore mode: %w", err)
 	}
 	if err := dst.Sync(); err != nil {
+		cleanupOnErr()
 		return fmt.Errorf("sync published destination: %w", err)
 	}
 	if err := dst.Close(); err != nil {
+		cleanupOnErr()
 		return fmt.Errorf("close destination: %w", err)
 	}
 	return nil

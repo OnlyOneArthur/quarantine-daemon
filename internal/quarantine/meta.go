@@ -3,10 +3,16 @@ package quarantine
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"time"
+
+	"golang.org/x/sys/unix"
+
+	"github.com/OnlyOneArthur/quarantine-daemon/internal/fsutil"
 )
 
 const metaSuffix = ".meta.json"
@@ -59,6 +65,9 @@ func (v *Vault) readMeta(fileName string) (*ItemMetadata, error) {
 }
 
 func (v *Vault) readMetaByID(id string) (*ItemMetadata, error) {
+	if !isHex64(id) {
+		return nil, ErrItemNotFound
+	}
 	meta, err := v.readMeta(id + metaSuffix)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -121,8 +130,61 @@ func writePKGBUILDStub(path string) error {
 
 // rollbackArtifact moves a vault artifact back to dest after a post-move failure,
 // restoring the original permission bits so the file is left as it was found.
+// Symlinks and cross-device boundaries (EXDEV) are handled safely.
 func rollbackArtifact(artifactPath, dest string, mode os.FileMode) error {
+	fi, err := os.Lstat(artifactPath)
+	if err != nil {
+		return fmt.Errorf("rollback lstat artifact: %w", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("rollback artifact is not a regular file: %s", artifactPath)
+	}
+
 	chmodErr := os.Chmod(artifactPath, mode.Perm())
+
+	// Try atomic rename first
 	renameErr := os.Rename(artifactPath, dest)
+	if renameErr == nil {
+		return chmodErr
+	}
+
+	// Handle cross-device rollback if EXDEV
+	if errors.Is(renameErr, unix.EXDEV) {
+		srcFile, openErr := fsutil.OpenSafe(artifactPath)
+		if openErr != nil {
+			return errors.Join(chmodErr, renameErr, openErr)
+		}
+		defer srcFile.Close()
+
+		destDir := filepath.Dir(dest)
+		tmp, tmpErr := os.CreateTemp(destDir, ".rollback-*")
+		if tmpErr != nil {
+			return errors.Join(chmodErr, renameErr, tmpErr)
+		}
+		tmpPath := tmp.Name()
+		defer func() {
+			_ = tmp.Close()
+			_ = os.Remove(tmpPath)
+		}()
+
+		if _, copyErr := io.Copy(tmp, srcFile.File); copyErr != nil {
+			return errors.Join(chmodErr, renameErr, copyErr)
+		}
+		if syncErr := tmp.Sync(); syncErr != nil {
+			return errors.Join(chmodErr, renameErr, syncErr)
+		}
+		if closeErr := tmp.Close(); closeErr != nil {
+			return errors.Join(chmodErr, renameErr, closeErr)
+		}
+		if chmodDestErr := os.Chmod(tmpPath, mode.Perm()); chmodDestErr != nil {
+			return errors.Join(chmodErr, renameErr, chmodDestErr)
+		}
+		if replaceErr := os.Rename(tmpPath, dest); replaceErr != nil {
+			return errors.Join(chmodErr, renameErr, replaceErr)
+		}
+		_ = os.Remove(artifactPath)
+		return chmodErr
+	}
+
 	return errors.Join(chmodErr, renameErr)
 }

@@ -42,6 +42,11 @@ func OpenSafe(path string) (*SafeFile, error) {
 	}
 
 	f := os.NewFile(uintptr(fd), cleanPath)
+	modTime := time.Time{}
+	if fi, err := f.Stat(); err == nil {
+		modTime = fi.ModTime()
+	}
+
 	// The numeric conversions below are required for portability: unix.Stat_t
 	// field widths differ per platform (e.g. Dev is int32 on darwin, uint64 on
 	// linux), so they cannot be dropped even where the host type already
@@ -57,7 +62,7 @@ func OpenSafe(path string) (*SafeFile, error) {
 		Mode:    os.FileMode(st.Mode & 07777),
 		UID:     int(st.Uid),
 		GID:     int(st.Gid),
-		ModTime: time.Unix(st.Mtim.Unix()),
+		ModTime: modTime,
 	}, nil
 }
 

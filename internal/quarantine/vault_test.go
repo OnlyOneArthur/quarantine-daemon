@@ -639,8 +639,23 @@ func TestInspectUnknownID(t *testing.T) {
 	}
 	defer v.Close()
 
-	if _, err := v.Inspect("does-not-exist"); !errors.Is(err, ErrItemNotFound) {
-		t.Errorf("Inspect = %v, want ErrItemNotFound", err)
+	invalidIDs := []string{
+		"does-not-exist",
+		"../../etc/passwd",
+		"../vault.lock",
+		"/etc/shadow",
+		"",
+	}
+	for _, id := range invalidIDs {
+		if _, err := v.Inspect(id); !errors.Is(err, ErrItemNotFound) {
+			t.Errorf("Inspect(%q) = %v, want ErrItemNotFound", id, err)
+		}
+		if err := v.Purge(id); !errors.Is(err, ErrItemNotFound) {
+			t.Errorf("Purge(%q) = %v, want ErrItemNotFound", id, err)
+		}
+		if err := v.Restore(id, ""); !errors.Is(err, ErrItemNotFound) {
+			t.Errorf("Restore(%q) = %v, want ErrItemNotFound", id, err)
+		}
 	}
 }
 

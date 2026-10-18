@@ -1,15 +1,19 @@
 package pkgbuild
 
-import "mvdan.cc/sh/v3/syntax"
+import (
+	"mvdan.cc/sh/v3/syntax"
+
+	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage"
+)
 
 // Verdict defines the triage action verdict.
-type Verdict string
+type Verdict = triage.Verdict
 
 // Verdict values ordered from least to most severe.
 const (
-	VerdictPass       Verdict = "PASS"
-	VerdictAlert      Verdict = "ALERT"
-	VerdictQuarantine Verdict = "QUARANTINE"
+	VerdictPass       = triage.VerdictPass
+	VerdictAlert      = triage.VerdictAlert
+	VerdictQuarantine = triage.VerdictQuarantine
 )
 
 // Threat categories.

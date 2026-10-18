@@ -87,6 +87,7 @@ done
 BIN_DIR=${BIN_DIR:-$PREFIX/bin}
 DESTDIR=${DESTDIR:-}
 BIN_PATH=$BIN_DIR/quarantined
+CTL_PATH=$BIN_DIR/quarantinctl
 
 command -v go >/dev/null 2>&1 || die "go not found in PATH; install Go 1.26+ first"
 
@@ -142,14 +143,16 @@ fi
 
 # ---- build -------------------------------------------------------------------
 BUILD_DIR=$(mktemp -d)
-info "building quarantined from $REPO_DIR"
+info "building quarantined and quarantinctl from $REPO_DIR"
 ( cd "$REPO_DIR" && go build -buildvcs=false -trimpath -o "$BUILD_DIR/quarantined" ./cmd/quarantined )
+( cd "$REPO_DIR" && go build -buildvcs=false -trimpath -o "$BUILD_DIR/quarantinctl" ./cmd/quarantinctl )
 
 # ---- install binary ----------------------------------------------------------
-info "installing binary to $BIN_PATH"
+info "installing binaries to $BIN_DIR"
 mkdir -p "$DESTDIR$BIN_DIR"
 # install(1) replaces via unlink+create, safe while the daemon is running
 install -m 0755 "$BUILD_DIR/quarantined" "$DESTDIR$BIN_PATH"
+install -m 0755 "$BUILD_DIR/quarantinctl" "$DESTDIR$CTL_PATH"
 
 if [ -z "$DESTDIR" ]; then
     case ":$PATH:" in
@@ -213,4 +216,5 @@ info "done."
 printf '%s\n' \
     "  status:  systemctl --user status quarantined" \
     "  logs:    journalctl --user -u quarantined -f" \
-    "  tui:     quarantined -tui"
+    "  cli:     quarantinctl status | list | inspect | restore | purge" \
+    "  tui:     quarantinctl tui (or quarantined -tui)"

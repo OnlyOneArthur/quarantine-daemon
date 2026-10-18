@@ -211,6 +211,11 @@ func (w *Watcher) walkTree(root string, onFile func(string)) error {
 	}
 
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		select {
+		case <-w.ctx.Done():
+			return filepath.SkipAll
+		default:
+		}
 		if err != nil {
 			// Skip entries that vanished or are unreadable rather than aborting
 			// the whole walk.

@@ -117,6 +117,9 @@ func parseELF64Headers(data []byte, byteOrder binary.ByteOrder, analysis *ELFAna
 }
 
 func sectionTableInvalid(shoff uint64, shnum, shentsize, dataLen int) bool {
+	if shoff == 0 && shnum == 0 {
+		return false // Stripped binary without section headers (System V ABI).
+	}
 	if shoff == 0 || shoff > uint64(dataLen) || shnum == 0 || shentsize <= 0 {
 		return true
 	}

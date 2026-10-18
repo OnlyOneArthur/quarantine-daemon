@@ -9,7 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/binary"
+	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage"
 )
 
 // Palette. Every color is adaptive so the TUI reads correctly on light and dark
@@ -199,7 +199,7 @@ func (m *Model) severityColor(score int) lipgloss.AdaptiveColor {
 	switch {
 	case score >= m.quarantineThreshold:
 		return colDanger
-	case score >= binary.AlertScoreThreshold:
+	case score >= triage.AlertScoreThreshold:
 		return colWarn
 	default:
 		return colMuted

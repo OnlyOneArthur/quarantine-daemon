@@ -369,6 +369,26 @@ package() {
 }
 `,
 		},
+		{
+			name: "traversal to shadow",
+			content: `
+pkgname=tamper-traversal
+pkgver=1.0.0
+package() {
+    cp evil /tmp/../etc/shadow
+}
+`,
+		},
+		{
+			name: "home var authorized_keys",
+			content: `
+pkgname=tamper-home
+pkgver=1.0.0
+package() {
+    cp evil ${HOME}/.ssh/authorized_keys
+}
+`,
+		},
 	}
 
 	cfg := config.DefaultConfig()

@@ -26,7 +26,7 @@ func AnalyzePE(data []byte) (*PEAnalysis, error) {
 		defer func() {
 			f.Close()
 		}()
-		inspectPESections(f.Sections, analysis)
+		inspectPESections(f.Sections, data, analysis)
 		inspectPEImports(f, analysis)
 	} else {
 		// Fallback for truncated/corrupted PE headers
@@ -39,10 +39,11 @@ func AnalyzePE(data []byte) (*PEAnalysis, error) {
 	return analysis, nil
 }
 
-func inspectPESections(sections []*pe.Section, analysis *PEAnalysis) {
+func inspectPESections(sections []*pe.Section, data []byte, analysis *PEAnalysis) {
 	const (
 		imageScnMemExecute = 0x20000000
 		imageScnMemWrite   = 0x80000000
+		maxEntropyBytes    = 64 * 1024 * 1024
 	)
 	var fallbackEntropy float64
 	var hasFallback, hasText bool
@@ -53,8 +54,16 @@ func inspectPESections(sections []*pe.Section, analysis *PEAnalysis) {
 		}
 
 		if sec.Name == ".text" || sec.Characteristics&imageScnMemExecute != 0 {
-			secData, err := sec.Data()
-			if err == nil && len(secData) > 0 {
+			if sec.Offset >= uint32(len(data)) {
+				continue
+			}
+			secSize := min(sec.Size, uint32(maxEntropyBytes))
+			end := sec.Offset + secSize
+			if end < sec.Offset || end > uint32(len(data)) {
+				end = uint32(len(data))
+			}
+			secData := data[sec.Offset:end]
+			if len(secData) > 0 {
 				if sec.Name == ".text" {
 					analysis.TextEntropy = CalculateEntropy(secData)
 					hasText = true

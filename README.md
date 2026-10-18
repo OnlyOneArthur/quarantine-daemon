@@ -124,8 +124,9 @@ Environment overrides: `PREFIX`, `BIN_DIR`, `DESTDIR`, `REPO_URL`, `REF`.
 ### Manual install
 
 ```bash
-go build -o ~/.local/bin/quarantined ./cmd/quarantined
-mkdir -p ~/.config/systemd/user
+make build
+mkdir -p ~/.local/bin ~/.config/systemd/user
+cp bin/quarantined bin/quarantinctl ~/.local/bin/
 cp systemd/quarantined.service ~/.config/systemd/user/
 systemctl --user daemon-reload
 systemctl --user enable --now quarantined
@@ -137,8 +138,13 @@ systemctl --user enable --now quarantined
 # daemon in the foreground
 go run ./cmd/quarantined -config demo/demo.toml
 
+# CLI commands
+go run ./cmd/quarantinctl --config demo/demo.toml status
+go run ./cmd/quarantinctl --config demo/demo.toml list
+
 # TUI in a second terminal
-go run ./cmd/quarantined -tui -config demo/demo.toml
+go run ./cmd/quarantinctl --config demo/demo.toml tui
+# (or legacy: go run ./cmd/quarantined -tui -config demo/demo.toml)
 ```
 
 `demo/demo.toml` watches only `demo/watch/` and quarantines into `demo/vault/`, so it is safe to
@@ -159,10 +165,34 @@ and passes.
 
 ## Usage
 
+### Daemon (`quarantined`)
+
 ```text
 quarantined [-config path/to/config.toml] [-log-level debug|info|warn|error]
-quarantined -tui [-config path/to/config.toml]
 quarantined -version
+quarantined -tui [-config path/to/config.toml]
+```
+
+### CLI Controller (`quarantinctl`)
+
+```text
+quarantinctl [global options] <command> [command options] [arguments]
+
+Commands:
+  status                Show daemon running status and statistics
+  list                  List all quarantined items in the vault
+  inspect <id>          Show detailed threat report for a quarantined item
+  restore <id> [--to P] Restore an item to its original path or destination
+  purge <id>            Permanently delete an item from the vault
+  watch add <path>      Dynamically add a directory to watch list
+  tui                   Launch the interactive terminal UI
+  version               Display version information
+
+Global Options:
+  --socket PATH         Path to daemon UNIX socket
+  --config PATH         Path to configuration file
+  --timeout DURATION    Request timeout (default: 5s)
+  --json                Output results in JSON format
 ```
 
 Run with no `-config` and the built-in defaults apply: watch `~/Downloads`, `/tmp`,

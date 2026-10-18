@@ -42,7 +42,7 @@ func (s *Server) authenticateConn(conn net.Conn) error {
 		s.writeError(conn, "", "AUTH_ERROR", err.Error())
 		return err
 	}
-	if clientUID != uint32(os.Getuid()) {
+	if clientUID != uint32(os.Geteuid()) {
 		s.writeError(conn, "", "UNAUTHORIZED", ErrUnauthorized.Error())
 		return ErrUnauthorized
 	}

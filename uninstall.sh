@@ -82,6 +82,7 @@ done
 BIN_DIR=${BIN_DIR:-$PREFIX/bin}
 DESTDIR=${DESTDIR:-}
 BIN_PATH=$DESTDIR$BIN_DIR/quarantined
+CTL_PATH=$DESTDIR$BIN_DIR/quarantinctl
 UNIT_PATH=$DESTDIR$HOME/.config/systemd/user/quarantined.service
 DATA_DIR=$DESTDIR${XDG_DATA_HOME:-$HOME/.local/share}/quarantined
 STATE_DIR=$DESTDIR${XDG_STATE_HOME:-$HOME/.local/state}
@@ -128,6 +129,7 @@ fi
 
 # ---- remove binary -----------------------------------------------------------
 rm_file "$BIN_PATH"
+rm_file "$CTL_PATH"
 
 # ---- remove stale socket files -----------------------------------------------
 rm_file "$RUN_DIR/quarantined.sock"

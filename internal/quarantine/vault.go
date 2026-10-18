@@ -282,6 +282,11 @@ func (v *Vault) Purge(id string) error {
 	})
 }
 
+// IsValidID reports whether s is a valid 64-character lowercase hex SHA-256 ID.
+func IsValidID(s string) bool {
+	return isHex64(s)
+}
+
 func isHex64(s string) bool {
 	if len(s) != 64 {
 		return false

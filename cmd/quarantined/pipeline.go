@@ -14,6 +14,7 @@ import (
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/fsutil"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/ipc"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/quarantine"
+	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/binary"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/triage/pkgbuild"
 	"github.com/OnlyOneArthur/quarantine-daemon/internal/watcher"
@@ -81,7 +82,7 @@ func (p *pipeline) handlePath(path string) (*quarantine.ItemMetadata, error) {
 
 	p.log.Info("triage complete", "path", path, "verdict", res.Verdict, "score", res.Score, "triggers", res.Triggers)
 
-	if res.Verdict != string(binary.VerdictQuarantine) || res.Score < p.cfg.Quarantine.ThresholdScore {
+	if res.Verdict != string(triage.VerdictQuarantine) || res.Score < p.cfg.Quarantine.ThresholdScore {
 		return nil, nil
 	}
 
